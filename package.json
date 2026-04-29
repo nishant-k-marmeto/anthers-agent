@@ -1,0 +1,31 @@
+{
+  "name": "anthers-agent",
+  "version": "1.0.0",
+  "description": "Agent SDK — AgentClient, React hook, chat panel and registry for the Anthers agent microservice",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "prepare": "tsc",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "lucide-react": ">=0.300.0",
+    "react": ">=17"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.0",
+    "lucide-react": "^0.469.0",
+    "typescript": "^5.9.0"
+  }
+}
