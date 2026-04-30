@@ -1,7 +1,5 @@
 /**
- * AgentPanel — plug-and-play chat panel UI with backdrop + slide-in animation.
- *
- * No external animation library required — pure CSS transitions.
+ * AgentPanel — polished slide-in chat panel.
  *
  * ── Minimal setup ────────────────────────────────────────────────────────────
  *
@@ -13,7 +11,7 @@
  *     agent={useAgent()}
  *   />
  *
- * ── All props ─────────────────────────────────────────────────────────────────
+ * ── Full props ────────────────────────────────────────────────────────────────
  *
  *   <AgentPanel
  *     isOpen={open}
@@ -21,28 +19,38 @@
  *     agent={agent}
  *     position="right"               // 'right' | 'left' | 'bottom-right' | 'bottom-left'
  *     title="Vision Agent"
+ *     subtitle="Powered by Gemini"
  *     logoUrl="https://..."
+ *     accentColor="#6366f1"          // header + user-bubble color (any CSS color)
  *     screenLabel="finance"
  *     suggestions={['Revenue trends', 'Cost anomalies']}
  *     onFeedback={(id, type) => analytics.track('feedback', { id, type })}
  *     onTrack={(event, props) => mixpanel.track(event, props)}
- *     // Events: 'query_sent' | 'suggestion_clicked' | 'conversation_cleared'
+ *     // Events: 'query_sent' | 'suggestion_clicked' | 'conversation_cleared' | 'panel_opened'
  *   />
  */
 
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, {
+  useState, useRef, useEffect, useCallback, useMemo,
+} from 'react';
 import {
   X, Trash2, Send, Loader2,
   ThumbsUp, ThumbsDown,
   TrendingUp, AlertTriangle, Info,
   Sparkles, MessageSquare, ChevronRight,
-  Bot, User,
+  Bot, Zap, Copy, Check,
 } from 'lucide-react';
 import type { AgentMessage } from './types';
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// ── Public types ──────────────────────────────────────────────────────────────
 
 export type PanelPosition = 'right' | 'left' | 'bottom-right' | 'bottom-left';
+
+export type TrackEvent =
+  | 'query_sent'
+  | 'suggestion_clicked'
+  | 'conversation_cleared'
+  | 'panel_opened';
 
 export interface AgentHookResult {
   messages:       AgentMessage[];
@@ -53,45 +61,48 @@ export interface AgentHookResult {
 }
 
 export interface AgentPanelProps {
-  isOpen:       boolean;
-  onClose:      () => void;
+  isOpen:        boolean;
+  onClose:       () => void;
   /** Pass the result of your useAgent() hook directly */
-  agent:        AgentHookResult;
-  position?:    PanelPosition;      // default: 'right'
-  title?:       string;             // default: 'AI Assistant'
-  logoUrl?:     string;             // shown in header + empty state
-  screenLabel?: string;             // context chip e.g. 'finance'
-  suggestions?: readonly string[];  // shown on empty state
-  onFeedback?:  (messageId: string, type: 'positive' | 'negative') => void;
+  agent:         AgentHookResult;
+  position?:     PanelPosition;     // default: 'right'
+  title?:        string;            // default: 'AI Assistant'
+  subtitle?:     string;            // shown below title e.g. 'Powered by Gemini'
+  logoUrl?:      string;            // shown in header + empty state
+  accentColor?:  string;            // hex/rgb for user bubbles + send btn (default: #6366f1)
+  screenLabel?:  string;            // context chip e.g. 'finance'
+  suggestions?:  readonly string[]; // shown on empty state
+  /** Called when user thumbs-up/down an assistant message */
+  onFeedback?:   (messageId: string, type: 'positive' | 'negative') => void;
   /**
-   * Analytics hook — all user interactions fire through here.
+   * Analytics / event hook — all user interactions fire through here.
+   *
    * Events:
-   *   'query_sent'           — user sends a message     props: { query, screen, is_suggestion }
-   *   'suggestion_clicked'   — user clicks a suggestion props: { suggestion_text, suggestion_index, screen }
-   *   'conversation_cleared' — user clears the chat     props: { screen, messages_count }
+   *   'panel_opened'         — panel becomes visible      props: { screen }
+   *   'query_sent'           — user submits a message     props: { query, screen, is_suggestion }
+   *   'suggestion_clicked'   — user clicks a suggestion   props: { suggestion_text, suggestion_index, screen }
+   *   'conversation_cleared' — user clears the chat       props: { screen, messages_count }
    */
-  onTrack?: (
-    event: 'query_sent' | 'suggestion_clicked' | 'conversation_cleared',
-    props:  Record<string, unknown>,
-  ) => void;
+  onTrack?: (event: TrackEvent, props: Record<string, unknown>) => void;
 }
 
-// ── Animation helpers ─────────────────────────────────────────────────────────
+// ── Layout constants ──────────────────────────────────────────────────────────
 
-// Map position → initial hidden transform so the panel slides in from the right direction
 const HIDDEN_TRANSFORM: Record<PanelPosition, string> = {
   'right':        'translateX(100%)',
   'left':         'translateX(-100%)',
-  'bottom-right': 'translateY(100%)',
-  'bottom-left':  'translateY(100%)',
+  'bottom-right': 'translateY(110%)',
+  'bottom-left':  'translateY(110%)',
 };
 
-const PANEL_BASE: Record<PanelPosition, string> = {
-  'right':        'fixed right-0 top-0 h-full w-[450px] border-l',
-  'left':         'fixed left-0 top-0 h-full w-[450px] border-r',
-  'bottom-right': 'fixed bottom-6 right-6 h-[600px] w-[400px] rounded-2xl border',
-  'bottom-left':  'fixed bottom-6 left-6  h-[600px] w-[400px] rounded-2xl border',
+const PANEL_SIZE: Record<PanelPosition, string> = {
+  'right':        'fixed right-0 top-0 h-full w-[420px] max-w-full',
+  'left':         'fixed left-0 top-0 h-full w-[420px] max-w-full',
+  'bottom-right': 'fixed bottom-5 right-5 h-[640px] w-[400px] rounded-2xl',
+  'bottom-left':  'fixed bottom-5 left-5  h-[640px] w-[400px] rounded-2xl',
 };
+
+const ACCENT_DEFAULT = '#6366f1';
 
 const DEFAULT_SUGGESTIONS = [
   'What are my top metrics this month?',
@@ -99,17 +110,19 @@ const DEFAULT_SUGGESTIONS = [
   'Explain any unusual patterns',
 ] as const;
 
-// ── Component ─────────────────────────────────────────────────────────────────
+// ── Main component ────────────────────────────────────────────────────────────
 
 export function AgentPanel({
   isOpen,
   onClose,
   agent,
-  position    = 'right',
-  title       = 'AI Assistant',
+  position     = 'right',
+  title        = 'AI Assistant',
+  subtitle,
   logoUrl,
+  accentColor  = ACCENT_DEFAULT,
   screenLabel,
-  suggestions = DEFAULT_SUGGESTIONS,
+  suggestions  = DEFAULT_SUGGESTIONS,
   onFeedback,
   onTrack,
 }: AgentPanelProps) {
@@ -120,33 +133,56 @@ export function AgentPanel({
   const [mounted,   setMounted]   = useState(false);
   const [visible,   setVisible]   = useState(false);
 
-  const scrollRef   = useRef<HTMLDivElement>(null);
-  const inputRef    = useRef<HTMLInputElement>(null);
+  const scrollRef  = useRef<HTMLDivElement>(null);
+  const inputRef   = useRef<HTMLTextAreaElement>(null);
+  const trackedOpen = useRef(false);
 
-  // Mount → trigger animation → unmount on close
+  // ── Mount / unmount animation ──────────────────────────────────────────────
   useEffect(() => {
     if (isOpen) {
       setMounted(true);
-      // double rAF so the element is in the DOM before we set visible = true
       requestAnimationFrame(() => requestAnimationFrame(() => setVisible(true)));
     } else {
       setVisible(false);
-      const t = setTimeout(() => setMounted(false), 320);
+      const t = setTimeout(() => setMounted(false), 340);
       return () => clearTimeout(t);
     }
   }, [isOpen]);
 
-  // Auto-scroll to bottom when new message arrives
+  // ── Fire panel_opened once per open ───────────────────────────────────────
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    if (visible && !trackedOpen.current) {
+      trackedOpen.current = true;
+      onTrack?.('panel_opened', { screen: screenLabel ?? null });
+    }
+    if (!visible) trackedOpen.current = false;
+  }, [visible, screenLabel, onTrack]);
+
+  // ── Auto-scroll on new messages ───────────────────────────────────────────
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    // Smooth scroll only if within 120px of bottom (user hasn't scrolled up)
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    if (nearBottom || isLoading) {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
     }
   }, [messages, isLoading]);
 
-  // Focus input when panel opens
+  // ── Focus input on open ───────────────────────────────────────────────────
   useEffect(() => {
-    if (visible) setTimeout(() => inputRef.current?.focus(), 50);
+    if (visible) setTimeout(() => inputRef.current?.focus(), 80);
   }, [visible]);
+
+  // ── Auto-resize textarea ──────────────────────────────────────────────────
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
+  }, [input]);
+
+  // ── Handlers ──────────────────────────────────────────────────────────────
 
   const handleSend = useCallback((text?: string, isSuggestion = false) => {
     const query = (text ?? input).trim();
@@ -154,6 +190,7 @@ export function AgentPanel({
     onTrack?.('query_sent', { query, screen: screenLabel ?? null, is_suggestion: isSuggestion });
     sendMessage(query);
     setInput('');
+    if (inputRef.current) inputRef.current.style.height = 'auto';
   }, [input, isLoading, screenLabel, sendMessage, onTrack]);
 
   const handleSuggestion = useCallback((s: string, i: number) => {
@@ -162,7 +199,7 @@ export function AgentPanel({
   }, [screenLabel, onTrack, handleSend]);
 
   const handleClear = useCallback(() => {
-    if (!window.confirm('Clear conversation?')) return;
+    if (!window.confirm('Clear this conversation?')) return;
     onTrack?.('conversation_cleared', { screen: screenLabel ?? null, messages_count: messages.length });
     clearMessages();
     setFeedback({});
@@ -179,330 +216,548 @@ export function AgentPanel({
     onClose();
   }, [cancelRequest, onClose]);
 
+  // ── Render guard ──────────────────────────────────────────────────────────
   if (!mounted) return null;
 
-  const transform = visible ? 'translateX(0) translateY(0)' : HIDDEN_TRANSFORM[position];
+  const panelTransform = visible ? 'translateX(0) translateY(0)' : HIDDEN_TRANSFORM[position];
+  const isFloating = position === 'bottom-right' || position === 'bottom-left';
 
   return (
     <>
-      {/* ── Backdrop ──────────────────────────────────────────── */}
+      {/* Backdrop */}
       <div
+        aria-hidden
         onClick={handleClose}
         style={{
-          position:   'fixed',
-          inset:      0,
-          zIndex:     9998,
-          background: 'rgba(15,23,42,0.25)',
-          backdropFilter: 'blur(2px)',
-          opacity:    visible ? 1 : 0,
-          transition: 'opacity 0.3s ease',
-          pointerEvents: visible ? 'auto' : 'none',
+          position:       'fixed',
+          inset:          0,
+          zIndex:         9998,
+          background:     'rgba(10,15,30,0.35)',
+          backdropFilter: 'blur(3px)',
+          WebkitBackdropFilter: 'blur(3px)',
+          opacity:        visible ? 1 : 0,
+          transition:     'opacity 0.3s ease',
+          pointerEvents:  visible ? 'auto' : 'none',
         }}
       />
 
-      {/* ── Panel ─────────────────────────────────────────────── */}
+      {/* Panel */}
       <div
-        className={`${PANEL_BASE[position]} bg-white shadow-2xl border-slate-200 flex flex-col overflow-hidden`}
+        role="dialog"
+        aria-label={title}
+        aria-modal="true"
+        className={`${PANEL_SIZE[position]} flex flex-col overflow-hidden bg-white shadow-2xl ${isFloating ? '' : 'border-l border-slate-200/70'}`}
         style={{
           zIndex:     9999,
-          transform,
+          transform:  panelTransform,
           opacity:    visible ? 1 : 0,
-          transition: 'transform 0.32s cubic-bezier(0.32,0.72,0,1), opacity 0.32s ease',
+          transition: 'transform 0.34s cubic-bezier(0.22,1,0.36,1), opacity 0.28s ease',
         }}
       >
-        {/* Header */}
-        <header className="flex items-center justify-between px-4 py-3.5 border-b border-slate-100 bg-white shrink-0">
-          <div className="flex items-center gap-3">
-            {logoUrl ? (
-              <img src={logoUrl} alt={title} className="w-8 h-8 rounded-lg shadow-sm object-contain" />
-            ) : (
-              <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white shadow-sm">
-                <Bot size={18} strokeWidth={2} />
-              </div>
-            )}
-            <div>
-              <h3 className="font-semibold text-slate-800 text-sm leading-tight">{title}</h3>
-              {screenLabel && (
-                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                  Context: {screenLabel}
-                </span>
-              )}
-            </div>
-            {/* Online indicator */}
-            <span className="relative flex h-2 w-2 ml-1">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500" />
-            </span>
-          </div>
+        {/* ── Header ───────────────────────────────────────────────────────── */}
+        <PanelHeader
+          title={title}
+          subtitle={subtitle}
+          logoUrl={logoUrl}
+          accentColor={accentColor}
+          screenLabel={screenLabel}
+          isFloating={isFloating}
+          messageCount={messages.length}
+          onClear={handleClear}
+          onClose={handleClose}
+        />
 
-          <div className="flex items-center gap-1">
-            <button
-              onClick={handleClear}
-              title="Clear conversation"
-              className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
-            >
-              <Trash2 size={15} strokeWidth={1.75} />
-            </button>
-            <button
-              onClick={handleClose}
-              title="Close"
-              className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
-            >
-              <X size={16} strokeWidth={1.75} />
-            </button>
-          </div>
-        </header>
-
-        {/* Messages area */}
+        {/* ── Message list ─────────────────────────────────────────────────── */}
         <div
           ref={scrollRef}
-          className="flex-1 overflow-y-auto px-4 py-5 space-y-6 bg-white"
+          className="flex-1 overflow-y-auto overscroll-contain scroll-smooth"
+          style={{ background: '#f8f9fc' }}
         >
-          {/* Empty state */}
-          {messages.length === 0 && (
-            <div className="h-full flex flex-col items-center justify-center text-center space-y-4 px-6 opacity-90">
-              <div className="w-16 h-16 rounded-2xl bg-indigo-50 flex items-center justify-center text-indigo-500 shadow-sm">
-                <MessageSquare size={30} strokeWidth={1.5} />
-              </div>
-              <div>
-                <h4 className="text-base font-semibold text-slate-700">How can I help you today?</h4>
-                <p className="text-sm text-slate-400 mt-1">
-                  {screenLabel
-                    ? `Ask me anything about your ${screenLabel} data.`
-                    : 'Ask me about your data, metrics, or insights.'}
-                </p>
-              </div>
-
-              {suggestions.length > 0 && (
-                <div className="w-full pt-2 space-y-2">
-                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">
-                    Try asking
-                  </p>
-                  {suggestions.map((s, i) => (
-                    <button
-                      key={i}
-                      onClick={() => handleSuggestion(s, i)}
-                      className="w-full p-3 text-left text-sm text-slate-600 bg-slate-50
-                                 hover:bg-indigo-50 hover:text-indigo-700 hover:border-indigo-200
-                                 border border-slate-200 rounded-xl transition-all group
-                                 flex items-center justify-between"
-                    >
-                      <span>{s}</span>
-                      <ChevronRight
-                        size={14}
-                        className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0 ml-2"
-                      />
-                    </button>
-                  ))}
-                </div>
+          {messages.length === 0 ? (
+            <EmptyState
+              title={title}
+              logoUrl={logoUrl}
+              accentColor={accentColor}
+              screenLabel={screenLabel}
+              suggestions={suggestions}
+              onSuggestion={handleSuggestion}
+            />
+          ) : (
+            <div className="px-4 py-5 space-y-4">
+              {messages.map((msg, idx) => (
+                <MessageBubble
+                  key={msg.id}
+                  message={msg}
+                  accentColor={accentColor}
+                  feedbackGiven={feedback[msg.id]}
+                  onFeedback={handleFeedback}
+                  isLast={idx === messages.length - 1}
+                />
+              ))}
+              {/* Loading dots when no optimistic message yet */}
+              {isLoading && !messages.some(m => m.loading) && (
+                <TypingIndicator />
               )}
             </div>
           )}
-
-          {/* Message list */}
-          {messages.map(msg => (
-            <MessageBubble
-              key={msg.id}
-              message={msg}
-              feedbackGiven={feedback[msg.id]}
-              onFeedback={handleFeedback}
-            />
-          ))}
         </div>
 
-        {/* Input area */}
-        <div className="px-4 pt-3 pb-4 border-t border-slate-100 bg-slate-50/60 shrink-0">
-          <div className="flex items-center gap-2">
-            <input
-              ref={inputRef}
-              type="text"
-              value={input}
-              onChange={e => setInput(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
-              }}
-              placeholder="Type a message..."
-              disabled={isLoading}
-              className="flex-1 text-sm bg-white border border-slate-200 rounded-xl px-4 py-2.5
-                         focus:outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400
-                         disabled:opacity-50 placeholder:text-slate-400 transition-all"
-            />
-            <button
-              onClick={() => handleSend()}
-              disabled={isLoading || !input.trim()}
-              className="w-10 h-10 flex items-center justify-center shrink-0 bg-indigo-600 text-white
-                         rounded-xl hover:bg-indigo-700 active:scale-95 shadow-sm
-                         disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-            >
-              {isLoading
-                ? <Loader2 size={16} className="animate-spin" />
-                : <Send size={16} strokeWidth={2} />
-              }
-            </button>
-          </div>
-          <p className="text-[10px] text-slate-400 mt-2 text-center">
-            {screenLabel ? <><span className="capitalize font-medium">{screenLabel}</span> · </> : null}
-            Enter ↵ to send
-          </p>
-        </div>
+        {/* ── Input area ───────────────────────────────────────────────────── */}
+        <InputBar
+          ref={inputRef}
+          value={input}
+          isLoading={isLoading}
+          accentColor={accentColor}
+          screenLabel={screenLabel}
+          onChange={setInput}
+          onSend={() => handleSend()}
+          onCancel={cancelRequest}
+        />
       </div>
     </>
   );
 }
 
-// ── Message bubble ────────────────────────────────────────────────────────────
+// ── PanelHeader ───────────────────────────────────────────────────────────────
 
-const INSIGHT_STYLES = {
-  warning:  { icon: AlertTriangle, cls: 'bg-amber-50 border-amber-200', text: 'text-amber-800', ic: 'text-amber-500' },
-  positive: { icon: TrendingUp,    cls: 'bg-green-50 border-green-200',  text: 'text-green-800', ic: 'text-green-500' },
-  neutral:  { icon: Info,          cls: 'bg-slate-50 border-slate-200',  text: 'text-slate-700', ic: 'text-slate-400' },
+function PanelHeader({
+  title, subtitle, logoUrl, accentColor, screenLabel, isFloating,
+  messageCount, onClear, onClose,
+}: {
+  title: string; subtitle?: string; logoUrl?: string; accentColor: string;
+  screenLabel?: string; isFloating: boolean; messageCount: number;
+  onClear: () => void; onClose: () => void;
+}) {
+  return (
+    <header
+      className={`shrink-0 flex items-center justify-between px-4 py-3 border-b border-black/[0.06] ${isFloating ? 'rounded-t-2xl' : ''}`}
+      style={{ background: `linear-gradient(135deg, ${accentColor}f2 0%, ${accentColor}d0 100%)` }}
+    >
+      {/* Left: logo + title */}
+      <div className="flex items-center gap-3 min-w-0">
+        {logoUrl ? (
+          <img
+            src={logoUrl}
+            alt={title}
+            className="w-9 h-9 rounded-xl object-contain bg-white/20 p-1 shrink-0"
+          />
+        ) : (
+          <div className="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center shrink-0 backdrop-blur-sm">
+            <Bot size={18} className="text-white" strokeWidth={2} />
+          </div>
+        )}
+
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <h3 className="font-semibold text-white text-sm leading-tight truncate">{title}</h3>
+            {/* Online dot */}
+            <span className="relative flex h-2 w-2 shrink-0">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-300 opacity-75" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-green-400" />
+            </span>
+          </div>
+          {(subtitle || screenLabel) && (
+            <p className="text-[11px] text-white/70 leading-tight truncate mt-0.5">
+              {subtitle ?? `Context: ${screenLabel}`}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* Right: actions */}
+      <div className="flex items-center gap-0.5 shrink-0">
+        {messageCount > 0 && (
+          <button
+            onClick={onClear}
+            title="Clear conversation"
+            className="p-2 rounded-lg text-white/70 hover:text-white hover:bg-white/20 transition-colors"
+          >
+            <Trash2 size={15} strokeWidth={1.75} />
+          </button>
+        )}
+        <button
+          onClick={onClose}
+          title="Close"
+          className="p-2 rounded-lg text-white/70 hover:text-white hover:bg-white/20 transition-colors"
+        >
+          <X size={17} strokeWidth={2} />
+        </button>
+      </div>
+    </header>
+  );
+}
+
+// ── EmptyState ────────────────────────────────────────────────────────────────
+
+function EmptyState({
+  title, logoUrl, accentColor, screenLabel, suggestions, onSuggestion,
+}: {
+  title: string; logoUrl?: string; accentColor: string; screenLabel?: string;
+  suggestions: readonly string[]; onSuggestion: (s: string, i: number) => void;
+}) {
+  return (
+    <div className="h-full min-h-[400px] flex flex-col items-center justify-center px-6 pb-6 pt-8 text-center">
+      {/* Icon / logo */}
+      <div
+        className="w-16 h-16 rounded-2xl flex items-center justify-center mb-4 shadow-md"
+        style={{ background: `linear-gradient(135deg, ${accentColor}22 0%, ${accentColor}44 100%)` }}
+      >
+        {logoUrl ? (
+          <img src={logoUrl} alt={title} className="w-10 h-10 object-contain" />
+        ) : (
+          <Sparkles size={28} strokeWidth={1.5} style={{ color: accentColor }} />
+        )}
+      </div>
+
+      <h4 className="text-[15px] font-semibold text-slate-800">How can I help you?</h4>
+      <p className="text-sm text-slate-400 mt-1.5 max-w-[280px] leading-relaxed">
+        {screenLabel
+          ? `Ask anything about your ${screenLabel} data — I'll pull live numbers.`
+          : "Ask about your data, metrics, or trends and I’ll find the answers."}
+      </p>
+
+      {suggestions.length > 0 && (
+        <div className="w-full mt-6 space-y-2">
+          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center justify-center gap-1.5">
+            <Zap size={10} className="text-slate-300" />
+            Suggested questions
+          </p>
+          {suggestions.map((s, i) => (
+            <button
+              key={i}
+              onClick={() => onSuggestion(s, i)}
+              className="w-full flex items-center justify-between gap-2 px-4 py-3 text-left text-sm
+                         text-slate-600 bg-white border border-slate-200/80 rounded-xl
+                         hover:border-opacity-80 hover:shadow-sm active:scale-[0.99]
+                         group transition-all duration-150"
+              style={{
+                // @ts-ignore
+                '--hover-border': accentColor,
+              }}
+              onMouseEnter={e => (e.currentTarget.style.borderColor = accentColor + '60')}
+              onMouseLeave={e => (e.currentTarget.style.borderColor = '')}
+            >
+              <span className="leading-snug">{s}</span>
+              <ChevronRight
+                size={14}
+                className="shrink-0 text-slate-300 group-hover:text-slate-500 transition-colors"
+                style={{ color: '' }}
+              />
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── InputBar ──────────────────────────────────────────────────────────────────
+
+const InputBar = React.forwardRef<
+  HTMLTextAreaElement,
+  {
+    value: string; isLoading: boolean; accentColor: string; screenLabel?: string;
+    onChange: (v: string) => void; onSend: () => void; onCancel?: () => void;
+  }
+>(({ value, isLoading, accentColor, screenLabel, onChange, onSend, onCancel }, ref) => {
+  const canSend = !!value.trim() && !isLoading;
+
+  return (
+    <div className="shrink-0 bg-white border-t border-slate-100 px-3 pt-2.5 pb-3">
+      <div
+        className="flex items-end gap-2 bg-slate-50 border border-slate-200 rounded-2xl px-3 py-2
+                   focus-within:border-opacity-60 focus-within:shadow-sm transition-all"
+        style={{ '--focus-color': accentColor } as React.CSSProperties}
+        onFocusCapture={e => (e.currentTarget.style.borderColor = accentColor + '80')}
+        onBlurCapture={e => (e.currentTarget.style.borderColor = '')}
+      >
+        <textarea
+          ref={ref}
+          rows={1}
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSend(); }
+          }}
+          placeholder="Ask me anything…"
+          disabled={isLoading}
+          className="flex-1 resize-none bg-transparent text-sm text-slate-800 placeholder:text-slate-400
+                     focus:outline-none disabled:opacity-50 leading-relaxed py-0.5"
+          style={{ maxHeight: 120 }}
+        />
+
+        {/* Send / cancel */}
+        {isLoading ? (
+          <button
+            onClick={onCancel}
+            title="Stop generating"
+            className="w-8 h-8 flex items-center justify-center rounded-xl shrink-0 mb-0.5
+                       text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors"
+          >
+            <Loader2 size={16} className="animate-spin" />
+          </button>
+        ) : (
+          <button
+            onClick={onSend}
+            disabled={!canSend}
+            title="Send (Enter)"
+            className="w-8 h-8 flex items-center justify-center rounded-xl shrink-0 mb-0.5
+                       text-white shadow-sm active:scale-90
+                       disabled:opacity-35 disabled:cursor-not-allowed transition-all"
+            style={{ background: canSend ? accentColor : '#94a3b8' }}
+          >
+            <Send size={14} strokeWidth={2.5} />
+          </button>
+        )}
+      </div>
+
+      <p className="text-[10px] text-slate-300 text-center mt-1.5">
+        {screenLabel && <><span className="text-slate-400 font-medium capitalize">{screenLabel}</span> · </>}
+        Enter ↵ to send · Shift+Enter for new line
+      </p>
+    </div>
+  );
+});
+InputBar.displayName = 'InputBar';
+
+// ── TypingIndicator ───────────────────────────────────────────────────────────
+
+function TypingIndicator() {
+  return (
+    <div className="flex items-end gap-2.5">
+      <AgentAvatar />
+      <div className="bg-white border border-slate-100 shadow-sm rounded-2xl rounded-bl-sm px-4 py-3.5 flex gap-1.5 items-center">
+        {[0, 1, 2].map(i => (
+          <span
+            key={i}
+            className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce"
+            style={{ animationDelay: `${i * 0.16}s`, animationDuration: '1s' }}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── MessageBubble ─────────────────────────────────────────────────────────────
+
+const INSIGHT_META = {
+  warning:  { icon: AlertTriangle, bg: 'bg-amber-50',  border: 'border-amber-200', text: 'text-amber-800',  ic: 'text-amber-500' },
+  positive: { icon: TrendingUp,    bg: 'bg-emerald-50', border: 'border-emerald-200', text: 'text-emerald-800', ic: 'text-emerald-500' },
+  neutral:  { icon: Info,          bg: 'bg-slate-50',  border: 'border-slate-200',  text: 'text-slate-700',  ic: 'text-slate-400' },
 } as const;
 
 function MessageBubble({
-  message,
-  feedbackGiven,
-  onFeedback,
+  message, accentColor, feedbackGiven, onFeedback, isLast,
 }: {
   message:       AgentMessage;
+  accentColor:   string;
   feedbackGiven?: 'positive' | 'negative';
   onFeedback:    (m: AgentMessage, t: 'positive' | 'negative') => void;
+  isLast:        boolean;
 }) {
-  // User message
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = useCallback(() => {
+    const text = message.response?.narrative ?? message.content ?? '';
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }, [message]);
+
+  const timeLabel = useMemo(() =>
+    new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    [message.timestamp],
+  );
+
+  // ── User message ───────────────────────────────────────────────────────────
   if (message.role === 'user') {
     return (
-      <div className="flex justify-end">
-        <div className="flex gap-2.5 flex-row-reverse items-end max-w-[82%]">
-          <div className="w-7 h-7 rounded-full bg-slate-100 flex items-center justify-center shrink-0">
-            <User size={14} className="text-slate-500" />
-          </div>
-          <div className="bg-indigo-600 text-white text-sm rounded-2xl rounded-tr-sm px-4 py-2.5 leading-relaxed shadow-sm">
-            {message.content}
-          </div>
+      <div className="flex justify-end items-end gap-2">
+        <div
+          className="max-w-[78%] text-sm text-white rounded-2xl rounded-br-sm px-4 py-2.5
+                     leading-relaxed shadow-sm"
+          style={{ background: accentColor }}
+        >
+          <p className="whitespace-pre-wrap break-words">{message.content}</p>
+        </div>
+        <div className="w-7 h-7 rounded-full bg-slate-200 flex items-center justify-center shrink-0 text-slate-500 text-[11px] font-bold">
+          U
         </div>
       </div>
     );
   }
 
-  // Loading bubble
+  // ── Loading bubble ─────────────────────────────────────────────────────────
   if (message.loading) {
-    return (
-      <div className="flex gap-2.5 items-end">
-        <AgentAvatar />
-        <div className="bg-slate-100 rounded-2xl rounded-tl-sm px-4 py-3.5">
-          <div className="flex gap-1.5 items-center">
-            {[0, 1, 2].map(i => (
-              <div
-                key={i}
-                className="w-2 h-2 bg-slate-400 rounded-full animate-bounce"
-                style={{ animationDelay: `${i * 0.15}s` }}
-              />
-            ))}
-          </div>
-        </div>
-      </div>
-    );
+    return <TypingIndicator />;
   }
 
-  // Error bubble
+  // ── Error bubble ───────────────────────────────────────────────────────────
   if (message.error) {
     return (
-      <div className="flex gap-2.5 items-end">
+      <div className="flex items-start gap-2.5">
         <AgentAvatar error />
-        <div className="bg-red-50 border border-red-200 rounded-2xl rounded-tl-sm px-4 py-2.5 text-sm text-red-600 leading-relaxed max-w-[82%]">
-          {message.error}
+        <div className="bg-red-50 border border-red-200 text-red-600 text-sm rounded-2xl rounded-tl-sm
+                        px-4 py-3 leading-relaxed max-w-[82%]">
+          <p className="font-medium text-xs text-red-400 mb-1">Something went wrong</p>
+          <p>{message.error}</p>
         </div>
       </div>
     );
   }
 
   const res = message.response;
+  const narrative = res?.narrative ?? message.content ?? '';
 
+  // ── Assistant message ──────────────────────────────────────────────────────
   return (
-    <div className="flex gap-2.5 items-start">
-      <AgentAvatar />
-      <div className="flex-1 min-w-0 space-y-2.5 max-w-[85%]">
-        {/* Main narrative bubble */}
-        <div className="bg-slate-100 rounded-2xl rounded-tl-sm px-4 py-3 text-sm text-slate-800 leading-relaxed">
-          {res?.narrative ?? message.content}
+    <div className="flex items-start gap-2.5 group">
+      <AgentAvatar accentColor={accentColor} />
+
+      <div className="flex-1 min-w-0 max-w-[85%] space-y-2">
+        {/* Narrative */}
+        <div className="bg-white border border-slate-100 shadow-sm rounded-2xl rounded-tl-sm px-4 py-3
+                        text-sm text-slate-800 leading-relaxed">
+          <FormattedText text={narrative} />
         </div>
 
         {/* Insight cards */}
-        {res?.insights?.map((insight, i) => {
-          const s = INSIGHT_STYLES[insight.type as keyof typeof INSIGHT_STYLES] ?? INSIGHT_STYLES.neutral;
+        {res?.insights?.map((ins, i) => {
+          const meta = INSIGHT_META[ins.type as keyof typeof INSIGHT_META] ?? INSIGHT_META.neutral;
           return (
-            <div key={i} className={`flex gap-2.5 rounded-xl px-3 py-2.5 text-xs border ${s.cls}`}>
-              <s.icon size={13} className={`${s.ic} shrink-0 mt-0.5`} strokeWidth={2} />
-              <div className={s.text}>
-                <p className="font-semibold">{insight.title}</p>
-                <p className="opacity-75 mt-0.5">{insight.detail}</p>
+            <div
+              key={i}
+              className={`flex gap-2.5 rounded-xl px-3 py-2.5 text-xs border
+                          ${meta.bg} ${meta.border}`}
+            >
+              <meta.icon size={13} className={`${meta.ic} shrink-0 mt-0.5`} strokeWidth={2} />
+              <div className={meta.text}>
+                <p className="font-semibold">{ins.title}</p>
+                <p className="opacity-70 mt-0.5">{ins.detail}</p>
               </div>
             </div>
           );
         })}
 
-        {/* Footer: confidence + apis called + feedback */}
-        {res && (
-          <div className="flex items-center justify-between pt-0.5 px-0.5">
-            {/* Left: confidence + api source */}
-            <div className="flex items-center gap-2 text-[10px] text-slate-400 min-w-0">
-              <span className={`px-1.5 py-0.5 rounded-full font-semibold shrink-0 ${
-                res.confidence === 'high'   ? 'bg-green-100 text-green-700'  :
-                res.confidence === 'medium' ? 'bg-yellow-100 text-yellow-700' :
-                                              'bg-slate-100 text-slate-500'
-              }`}>
-                {res.confidence}
-              </span>
-              {res.apisCalled?.length > 0 && (
-                <span className="truncate" title={res.apisCalled.join(', ')}>
-                  via {res.apisCalled[0]}{res.apisCalled.length > 1 ? ` +${res.apisCalled.length - 1}` : ''}
-                </span>
-              )}
-              <span className="shrink-0 text-slate-300">
-                {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-              </span>
-            </div>
-
-            {/* Right: thumbs feedback */}
-            <div className="flex items-center gap-1 shrink-0">
-              {(['positive', 'negative'] as const).map(type => (
-                <button
-                  key={type}
-                  onClick={() => onFeedback(message, type)}
-                  disabled={!!feedbackGiven}
-                  title={type === 'positive' ? 'Good response' : 'Bad response'}
-                  className={`p-1.5 rounded-lg transition-all ${
-                    feedbackGiven === type
-                      ? type === 'positive' ? 'text-green-600 bg-green-100' : 'text-red-500 bg-red-100'
-                      : feedbackGiven
-                        ? 'text-slate-300 cursor-default'
-                        : type === 'positive'
-                          ? 'text-slate-400 hover:text-green-600 hover:bg-green-50'
-                          : 'text-slate-400 hover:text-red-500 hover:bg-red-50'
-                  }`}
-                >
-                  {type === 'positive'
-                    ? <ThumbsUp size={12} strokeWidth={2} />
-                    : <ThumbsDown size={12} strokeWidth={2} />
-                  }
-                </button>
-              ))}
-              {feedbackGiven && (
-                <span className="text-[10px] text-slate-400 ml-0.5">Thanks!</span>
-              )}
-            </div>
+        {/* Footer row */}
+        <div className="flex items-center justify-between pl-0.5 pr-0.5">
+          {/* Left: confidence + source + time */}
+          <div className="flex items-center gap-2 text-[10px] text-slate-400 min-w-0">
+            {res && (
+              <>
+                <ConfidenceBadge level={res.confidence} />
+                {res.apisCalled?.length > 0 && (
+                  <span className="truncate text-slate-400" title={res.apisCalled.join(', ')}>
+                    via {res.apisCalled[0]}
+                    {res.apisCalled.length > 1 ? ` +${res.apisCalled.length - 1}` : ''}
+                  </span>
+                )}
+              </>
+            )}
+            <span className="text-slate-300 shrink-0">{timeLabel}</span>
           </div>
-        )}
+
+          {/* Right: copy + feedback */}
+          <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+            {/* Copy */}
+            <button
+              onClick={handleCopy}
+              title="Copy response"
+              className="p-1.5 rounded-lg text-slate-300 hover:text-slate-500 hover:bg-slate-100 transition-colors"
+            >
+              {copied ? <Check size={11} strokeWidth={2.5} className="text-emerald-500" /> : <Copy size={11} strokeWidth={2} />}
+            </button>
+
+            {/* Thumbs */}
+            {(['positive', 'negative'] as const).map(type => (
+              <button
+                key={type}
+                onClick={() => onFeedback(message, type)}
+                disabled={!!feedbackGiven}
+                title={type === 'positive' ? 'Good response' : 'Bad response'}
+                className={`p-1.5 rounded-lg transition-all ${
+                  feedbackGiven === type
+                    ? type === 'positive' ? 'text-emerald-500 bg-emerald-50' : 'text-red-500 bg-red-50'
+                    : feedbackGiven
+                      ? 'text-slate-200 cursor-default'
+                      : type === 'positive'
+                        ? 'text-slate-300 hover:text-emerald-500 hover:bg-emerald-50'
+                        : 'text-slate-300 hover:text-red-500 hover:bg-red-50'
+                }`}
+              >
+                {type === 'positive'
+                  ? <ThumbsUp size={11} strokeWidth={2} />
+                  : <ThumbsDown size={11} strokeWidth={2} />
+                }
+              </button>
+            ))}
+            {feedbackGiven && (
+              <span className="text-[10px] text-slate-300 ml-0.5">Thanks!</span>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
 }
 
-function AgentAvatar({ error }: { error?: boolean }) {
+// ── Sub-components ────────────────────────────────────────────────────────────
+
+function AgentAvatar({ error, accentColor }: { error?: boolean; accentColor?: string }) {
   return (
-    <div className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${
-      error ? 'bg-red-100' : 'bg-indigo-100'
-    }`}>
-      <Sparkles size={13} strokeWidth={2} className={error ? 'text-red-500' : 'text-indigo-600'} />
+    <div
+      className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${error ? 'bg-red-100' : ''}`}
+      style={!error ? { background: `${accentColor ?? ACCENT_DEFAULT}22` } : undefined}
+    >
+      <Sparkles
+        size={13}
+        strokeWidth={2}
+        style={{ color: error ? '#ef4444' : (accentColor ?? ACCENT_DEFAULT) }}
+      />
+    </div>
+  );
+}
+
+function ConfidenceBadge({ level }: { level?: string }) {
+  if (!level) return null;
+  const styles: Record<string, string> = {
+    high:   'bg-emerald-100 text-emerald-700',
+    medium: 'bg-amber-100 text-amber-700',
+    low:    'bg-slate-100 text-slate-500',
+  };
+  return (
+    <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-semibold shrink-0 ${styles[level] ?? styles.low}`}>
+      {level}
+    </span>
+  );
+}
+
+/** Minimal inline-text formatter: **bold**, bullet lines starting with - or • */
+function FormattedText({ text }: { text: string }) {
+  const lines = text.split('\n');
+  return (
+    <div className="space-y-1">
+      {lines.map((line, i) => {
+        const isBullet = /^[\-•]\s/.test(line.trimStart());
+        const trimmed  = isBullet ? line.trimStart().slice(2).trim() : line;
+        const parts    = trimmed.split(/(\*\*[^*]+\*\*)/g);
+        const rendered = parts.map((p, j) =>
+          p.startsWith('**') && p.endsWith('**')
+            ? <strong key={j} className="font-semibold text-slate-900">{p.slice(2, -2)}</strong>
+            : <span key={j}>{p}</span>,
+        );
+        if (isBullet) {
+          return (
+            <div key={i} className="flex items-start gap-1.5">
+              <span className="mt-1.5 w-1 h-1 rounded-full bg-slate-400 shrink-0" />
+              <span>{rendered}</span>
+            </div>
+          );
+        }
+        return <p key={i} className={line.trim() === '' ? 'h-2' : ''}>{rendered}</p>;
+      })}
     </div>
   );
 }
