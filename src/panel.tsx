@@ -796,7 +796,7 @@ function MessageBubble({ message, accentColor, feedbackGiven, onFeedback, isLast
     );
   }
 
-  const res = message.response;
+  const res       = message.response;
   const narrative = res?.narrative ?? message.content ?? '';
 
   // Agent bubble
