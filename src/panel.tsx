@@ -1,9 +1,12 @@
 /**
- * AgentPanel — polished slide-in chat panel.
+ * AgentPanel — modern floating chat panel.
+ *
+ * Three display modes:
+ *   'bubble'   — minimised to a launcher button (bottom-right corner)
+ *   'float'    — compact floating card (400 × 600, bottom-right)
+ *   'full'     — full-height side-panel (right edge, 460 px wide)
  *
  * ── Minimal setup ────────────────────────────────────────────────────────────
- *
- *   import { AgentPanel } from 'anthers-agent';
  *
  *   <AgentPanel
  *     isOpen={open}
@@ -17,16 +20,15 @@
  *     isOpen={open}
  *     onClose={() => setOpen(false)}
  *     agent={agent}
- *     position="right"               // 'right' | 'left' | 'bottom-right' | 'bottom-left'
- *     title="Vision Agent"
+ *     defaultMode="float"            // 'float' | 'full'  (default: 'float')
+ *     title="Nexus Agent"
  *     subtitle="Powered by Gemini"
  *     logoUrl="https://..."
- *     accentColor="#6366f1"          // header + user-bubble color (any CSS color)
- *     screenLabel="finance"
- *     suggestions={['Revenue trends', 'Cost anomalies']}
- *     onFeedback={(id, type) => analytics.track('feedback', { id, type })}
+ *     accentColor="#6366f1"
+ *     screenLabel="products"
+ *     suggestions={['Show products', 'Top expenses']}
+ *     onFeedback={(id, type) => track('feedback', { id, type })}
  *     onTrack={(event, props) => mixpanel.track(event, props)}
- *     // Events: 'query_sent' | 'suggestion_clicked' | 'conversation_cleared' | 'panel_opened'
  *   />
  */
 
@@ -34,18 +36,17 @@ import React, {
   useState, useRef, useEffect, useCallback, useMemo,
 } from 'react';
 import {
-  X, Trash2, Send, Loader2,
-  ThumbsUp, ThumbsDown,
-  TrendingUp, AlertTriangle, Info,
-  Sparkles, MessageSquare, ChevronRight,
-  Bot, Zap, Copy, Check,
-  Plus, Clock, MoreVertical,
+  X, Send, Loader2, Maximize2, Minimize2,
+  ThumbsUp, ThumbsDown, TrendingUp, AlertTriangle, Info,
+  Sparkles, ChevronRight, Bot, Zap, Copy, Check,
+  Plus, Clock, Trash2, MessageSquare, PanelRightClose,
 } from 'lucide-react';
 import type { AgentMessage, Thread } from './types';
 
-// ── Public types ──────────────────────────────────────────────────────────────
+// ── Types ─────────────────────────────────────────────────────────────────────
 
-export type PanelPosition = 'right' | 'left' | 'bottom-right' | 'bottom-left';
+export type PanelMode = 'float' | 'full';
+export type PanelPosition = 'right' | 'left' | 'bottom-right' | 'bottom-left'; // kept for back-compat
 
 export type TrackEvent =
   | 'query_sent'
@@ -54,82 +55,56 @@ export type TrackEvent =
   | 'panel_opened';
 
 export interface AgentHookResult {
-  messages:        AgentMessage[];
-  isLoading:       boolean;
-  sendMessage:     (msg: string) => void;
-  clearMessages:   () => void;
-  cancelRequest?:  () => void;
-  // Thread management
-  threads?:        Thread[];
+  messages: AgentMessage[];
+  isLoading: boolean;
+  sendMessage: (msg: string) => void;
+  clearMessages: () => void;
+  cancelRequest?: () => void;
+  threads?: Thread[];
   currentThreadId?: string;
-  newThread?:      () => void;
-  switchThread?:   (id: string) => void;
-  deleteThread?:   (id: string) => void;
+  newThread?: () => void;
+  switchThread?: (id: string) => void;
+  deleteThread?: (id: string) => void;
 }
 
 export interface AgentPanelProps {
-  isOpen:        boolean;
-  onClose:       () => void;
-  /** Pass the result of your useAgent() hook directly */
-  agent:         AgentHookResult;
-  position?:     PanelPosition;     // default: 'right'
-  title?:        string;            // default: 'AI Assistant'
-  subtitle?:     string;            // shown below title e.g. 'Powered by Gemini'
-  logoUrl?:      string;            // shown in header + empty state
-  accentColor?:  string;            // hex/rgb for user bubbles + send btn (default: #6366f1)
-  screenLabel?:  string;            // context chip e.g. 'finance'
-  suggestions?:  readonly string[]; // shown on empty state
-  /** Called when user thumbs-up/down an assistant message */
-  onFeedback?:   (messageId: string, type: 'positive' | 'negative') => void;
-  /**
-   * Analytics / event hook — all user interactions fire through here.
-   *
-   * Events:
-   *   'panel_opened'         — panel becomes visible      props: { screen }
-   *   'query_sent'           — user submits a message     props: { query, screen, is_suggestion }
-   *   'suggestion_clicked'   — user clicks a suggestion   props: { suggestion_text, suggestion_index, screen }
-   *   'conversation_cleared' — user clears the chat       props: { screen, messages_count }
-   */
+  isOpen: boolean;
+  onClose: () => void;
+  agent: AgentHookResult;
+  defaultMode?: PanelMode;
+  title?: string;
+  subtitle?: string;
+  logoUrl?: string;
+  accentColor?: string;
+  screenLabel?: string;
+  suggestions?: readonly string[];
+  onFeedback?: (messageId: string, type: 'positive' | 'negative') => void;
   onTrack?: (event: TrackEvent, props: Record<string, unknown>) => void;
 }
 
-// ── Layout constants ──────────────────────────────────────────────────────────
+// ── Constants ─────────────────────────────────────────────────────────────────
 
-const HIDDEN_TRANSFORM: Record<PanelPosition, string> = {
-  'right':        'translateX(100%)',
-  'left':         'translateX(-100%)',
-  'bottom-right': 'translateY(110%)',
-  'bottom-left':  'translateY(110%)',
-};
-
-const PANEL_SIZE: Record<PanelPosition, string> = {
-  'right':        'fixed right-0 top-0 h-full w-[420px] max-w-full',
-  'left':         'fixed left-0 top-0 h-full w-[420px] max-w-full',
-  'bottom-right': 'fixed bottom-5 right-5 h-[640px] w-[400px] rounded-2xl',
-  'bottom-left':  'fixed bottom-5 left-5  h-[640px] w-[400px] rounded-2xl',
-};
-
-const ACCENT_DEFAULT = '#6366f1';
+const ACCENT = '#6366f1';
 
 const DEFAULT_SUGGESTIONS = [
   'What are my top metrics this month?',
   'Where are costs growing fastest?',
-  'Explain any unusual patterns',
+  'Show me recent anomalies',
 ] as const;
 
-// ── Main component ────────────────────────────────────────────────────────────
+// ── AgentPanel ────────────────────────────────────────────────────────────────
 
 export function AgentPanel({
   isOpen,
   onClose,
   agent,
-  position     = 'right',
-  title        = 'AI Assistant',
+  defaultMode = 'float',
+  title = 'AI Assistant',
   subtitle,
   logoUrl,
-  accentColor  = ACCENT_DEFAULT,
+  accentColor = ACCENT,
   screenLabel,
-  suggestions  = DEFAULT_SUGGESTIONS,
+  suggestions = DEFAULT_SUGGESTIONS,
   onFeedback,
   onTrack,
 }: AgentPanelProps) {
@@ -138,31 +113,32 @@ export function AgentPanel({
     threads, currentThreadId, newThread, switchThread, deleteThread,
   } = agent;
 
-  const hasThreads = !!(threads && threads.length > 0 && newThread && switchThread);
+  const [mode, setMode] = useState<PanelMode>(defaultMode);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [mounted, setMounted] = useState(false);
+  const [visible, setVisible] = useState(false);
+  const [input, setInput] = useState('');
+  const [feedback, setFeedback] = useState<Record<string, 'positive' | 'negative'>>({});
 
-  const [input,     setInput]     = useState('');
-  const [feedback,  setFeedback]  = useState<Record<string, 'positive' | 'negative'>>({});
-  const [mounted,   setMounted]   = useState(false);
-  const [visible,   setVisible]   = useState(false);
-
-  const scrollRef  = useRef<HTMLDivElement>(null);
-  const inputRef   = useRef<HTMLTextAreaElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const trackedOpen = useRef(false);
 
-  // ── Mount / unmount animation ──────────────────────────────────────────────
+  const hasThreads = !!(threads && threads.length > 0 && newThread && switchThread);
+
+  // ── Open / close animation ────────────────────────────────────────────────
   useEffect(() => {
     if (isOpen) {
       setMounted(true);
       requestAnimationFrame(() => requestAnimationFrame(() => setVisible(true)));
     } else {
       setVisible(false);
-      const t = setTimeout(() => setMounted(false), 340);
+      const t = setTimeout(() => setMounted(false), 320);
       return () => clearTimeout(t);
     }
   }, [isOpen]);
 
-  // ── Fire panel_opened once per open ───────────────────────────────────────
+  // ── Track panel open ──────────────────────────────────────────────────────
   useEffect(() => {
     if (visible && !trackedOpen.current) {
       trackedOpen.current = true;
@@ -171,20 +147,17 @@ export function AgentPanel({
     if (!visible) trackedOpen.current = false;
   }, [visible, screenLabel, onTrack]);
 
-  // ── Auto-scroll on new messages ───────────────────────────────────────────
+  // ── Auto-scroll ───────────────────────────────────────────────────────────
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    // Smooth scroll only if within 120px of bottom (user hasn't scrolled up)
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
-    if (nearBottom || isLoading) {
-      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
-    }
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
+    if (nearBottom || isLoading) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
   }, [messages, isLoading]);
 
   // ── Focus input on open ───────────────────────────────────────────────────
   useEffect(() => {
-    if (visible) setTimeout(() => inputRef.current?.focus(), 80);
+    if (visible) setTimeout(() => inputRef.current?.focus(), 100);
   }, [visible]);
 
   // ── Auto-resize textarea ──────────────────────────────────────────────────
@@ -192,11 +165,10 @@ export function AgentPanel({
     const el = inputRef.current;
     if (!el) return;
     el.style.height = 'auto';
-    el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
+    el.style.height = `${Math.min(el.scrollHeight, 112)}px`;
   }, [input]);
 
-  // ── Handlers ──────────────────────────────────────────────────────────────
-
+  // ── Handlers ─────────────────────────────────────────────────────────────
   const handleSend = useCallback((text?: string, isSuggestion = false) => {
     const query = (text ?? input).trim();
     if (!query || isLoading) return;
@@ -224,67 +196,92 @@ export function AgentPanel({
     onFeedback?.(msg.id, type);
   }, [feedback, onFeedback]);
 
-  const handleClose = useCallback(() => {
-    cancelRequest?.();
-    onClose();
-  }, [cancelRequest, onClose]);
+  const handleClose = useCallback(() => { cancelRequest?.(); onClose(); }, [cancelRequest, onClose]);
 
-  // ── Render guard ──────────────────────────────────────────────────────────
   if (!mounted) return null;
 
-  const panelTransform = visible ? 'translateX(0) translateY(0)' : HIDDEN_TRANSFORM[position];
-  const isFloating = position === 'bottom-right' || position === 'bottom-left';
+  // ── Panel geometry ────────────────────────────────────────────────────────
+  const isFloat = mode === 'float';
+
+  const panelStyle: React.CSSProperties = isFloat
+    ? {
+      position: 'fixed',
+      bottom: 24,
+      right: 24,
+      width: 400,
+      height: 620,
+      borderRadius: 20,
+      zIndex: 9999,
+      transform: visible ? 'scale(1) translateY(0)' : 'scale(0.94) translateY(24px)',
+      opacity: visible ? 1 : 0,
+      transition: 'transform 0.28s cubic-bezier(0.22,1,0.36,1), opacity 0.22s ease',
+      transformOrigin: 'bottom right',
+    }
+    : {
+      position: 'fixed',
+      top: 0,
+      right: 0,
+      bottom: 0,
+      width: 460,
+      zIndex: 9999,
+      transform: visible ? 'translateX(0)' : 'translateX(100%)',
+      opacity: visible ? 1 : 0,
+      transition: 'transform 0.32s cubic-bezier(0.22,1,0.36,1), opacity 0.25s ease',
+    };
 
   return (
     <>
-      {/* Backdrop */}
-      <div
-        aria-hidden
-        onClick={handleClose}
-        style={{
-          position:       'fixed',
-          inset:          0,
-          zIndex:         9998,
-          background:     'rgba(10,15,30,0.35)',
-          backdropFilter: 'blur(3px)',
-          WebkitBackdropFilter: 'blur(3px)',
-          opacity:        visible ? 1 : 0,
-          transition:     'opacity 0.3s ease',
-          pointerEvents:  visible ? 'auto' : 'none',
-        }}
-      />
+      {/* Backdrop — only in full mode */}
+      {!isFloat && (
+        <div
+          aria-hidden
+          onClick={handleClose}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 9998,
+            background: 'rgba(15,20,40,0.25)',
+            backdropFilter: 'blur(4px)',
+            WebkitBackdropFilter: 'blur(4px)',
+            opacity: visible ? 1 : 0,
+            transition: 'opacity 0.28s ease',
+          }}
+        />
+      )}
 
       {/* Panel */}
       <div
         role="dialog"
         aria-label={title}
         aria-modal="true"
-        className={`${PANEL_SIZE[position]} flex flex-col overflow-hidden bg-white shadow-2xl ${isFloating ? '' : 'border-l border-slate-200/70'}`}
         style={{
-          zIndex:     9999,
-          transform:  panelTransform,
-          opacity:    visible ? 1 : 0,
-          transition: 'transform 0.34s cubic-bezier(0.22,1,0.36,1), opacity 0.28s ease',
+          ...panelStyle,
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
+          background: '#ffffff',
+          boxShadow: isFloat
+            ? '0 24px 64px -8px rgba(0,0,0,0.18), 0 8px 24px -4px rgba(0,0,0,0.10), 0 0 0 1px rgba(0,0,0,0.06)'
+            : '0 0 0 1px rgba(0,0,0,0.06), -12px 0 48px -8px rgba(0,0,0,0.12)',
         }}
       >
-        {/* ── Header ───────────────────────────────────────────────────────── */}
-        <PanelHeader
+        {/* Header */}
+        <Header
           title={title}
           subtitle={subtitle}
           logoUrl={logoUrl}
           accentColor={accentColor}
           screenLabel={screenLabel}
-          isFloating={isFloating}
-          messageCount={messages.length}
+          mode={mode}
           hasThreads={hasThreads}
           sidebarOpen={sidebarOpen}
+          messageCount={messages.length}
           onToggleSidebar={() => setSidebarOpen(o => !o)}
+          onToggleMode={() => setMode(m => m === 'float' ? 'full' : 'float')}
           onClear={handleClear}
           onClose={handleClose}
         />
 
-        {/* ── Body (sidebar + messages) ─────────────────────────────────────── */}
-        <div className="flex flex-1 overflow-hidden">
+        {/* Body */}
+        <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
 
           {/* Thread sidebar */}
           {hasThreads && sidebarOpen && (
@@ -298,11 +295,10 @@ export function AgentPanel({
             />
           )}
 
-          {/* Message list */}
+          {/* Messages */}
           <div
             ref={scrollRef}
-            className="flex-1 overflow-y-auto overscroll-contain scroll-smooth"
-            style={{ background: '#f8f9fc' }}
+            style={{ flex: 1, overflowY: 'auto', overscrollBehavior: 'contain', background: '#f7f8fc' }}
           >
             {messages.length === 0 ? (
               <EmptyState
@@ -314,7 +310,7 @@ export function AgentPanel({
                 onSuggestion={handleSuggestion}
               />
             ) : (
-              <div className="px-4 py-5 space-y-4">
+              <div style={{ padding: '20px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
                 {messages.map((msg, idx) => (
                   <MessageBubble
                     key={msg.id}
@@ -325,15 +321,13 @@ export function AgentPanel({
                     isLast={idx === messages.length - 1}
                   />
                 ))}
-                {isLoading && !messages.some(m => m.loading) && (
-                  <TypingIndicator />
-                )}
+                {isLoading && !messages.some(m => m.loading) && <TypingIndicator accentColor={accentColor} />}
               </div>
             )}
           </div>
         </div>
 
-        {/* ── Input area ───────────────────────────────────────────────────── */}
+        {/* Input */}
         <InputBar
           ref={inputRef}
           value={input}
@@ -349,78 +343,100 @@ export function AgentPanel({
   );
 }
 
-// ── PanelHeader ───────────────────────────────────────────────────────────────
+// ── Header ────────────────────────────────────────────────────────────────────
 
-function PanelHeader({
-  title, subtitle, logoUrl, accentColor, screenLabel, isFloating,
-  messageCount, hasThreads, sidebarOpen, onToggleSidebar, onClear, onClose,
+function Header({
+  title, subtitle, logoUrl, accentColor, screenLabel, mode,
+  hasThreads, sidebarOpen, messageCount,
+  onToggleSidebar, onToggleMode, onClear, onClose,
 }: {
   title: string; subtitle?: string; logoUrl?: string; accentColor: string;
-  screenLabel?: string; isFloating: boolean; messageCount: number;
-  hasThreads: boolean; sidebarOpen: boolean;
-  onToggleSidebar: () => void; onClear: () => void; onClose: () => void;
+  screenLabel?: string; mode: PanelMode; hasThreads: boolean; sidebarOpen: boolean;
+  messageCount: number; onToggleSidebar: () => void; onToggleMode: () => void;
+  onClear: () => void; onClose: () => void;
 }) {
   return (
-    <header
-      className={`shrink-0 flex items-center justify-between px-4 py-3 border-b border-black/[0.06] ${isFloating ? 'rounded-t-2xl' : ''}`}
-      style={{ background: `linear-gradient(135deg, ${accentColor}f2 0%, ${accentColor}d0 100%)` }}
-    >
-      {/* Left: threads toggle + logo + title */}
-      <div className="flex items-center gap-2 min-w-0">
+    <div style={{
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      padding: '14px 16px',
+      borderBottom: '1px solid rgba(0,0,0,0.06)',
+      background: `linear-gradient(135deg, ${accentColor} 0%, ${adjustHex(accentColor, -20)} 100%)`,
+      flexShrink: 0,
+    }}>
+      {/* Left */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
         {hasThreads && (
           <button
             onClick={onToggleSidebar}
-            title={sidebarOpen ? 'Hide threads' : 'Show threads'}
-            className={`p-1.5 rounded-lg transition-colors shrink-0 ${sidebarOpen ? 'bg-white/25 text-white' : 'text-white/70 hover:text-white hover:bg-white/20'}`}
+            title={sidebarOpen ? 'Hide threads' : 'Threads'}
+            style={{
+              ...iconBtn,
+              background: sidebarOpen ? 'rgba(255,255,255,0.25)' : 'transparent',
+              color: 'rgba(255,255,255,0.85)',
+            }}
           >
-            <MessageSquare size={15} strokeWidth={1.75} />
+            <MessageSquare size={15} />
           </button>
         )}
 
-        {logoUrl ? (
-          <img src={logoUrl} alt={title} className="w-8 h-8 rounded-xl object-contain bg-white/20 p-1 shrink-0" />
-        ) : (
-          <div className="w-8 h-8 rounded-xl bg-white/20 flex items-center justify-center shrink-0 backdrop-blur-sm">
-            <Bot size={16} className="text-white" strokeWidth={2} />
-          </div>
-        )}
+        {/* Avatar */}
+        <div style={{
+          width: 34, height: 34, borderRadius: 10,
+          background: 'rgba(255,255,255,0.2)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          flexShrink: 0, backdropFilter: 'blur(8px)',
+        }}>
+          {logoUrl
+            ? <img src={logoUrl} alt={title} style={{ width: 22, height: 22, objectFit: 'contain' }} />
+            : <Bot size={16} color="white" strokeWidth={2} />
+          }
+        </div>
 
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <h3 className="font-semibold text-white text-sm leading-tight truncate">{title}</h3>
-            <span className="relative flex h-2 w-2 shrink-0">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-300 opacity-75" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-green-400" />
+        <div style={{ minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontWeight: 600, color: '#fff', fontSize: 13.5, lineHeight: 1.2 }}>{title}</span>
+            {/* Live dot */}
+            <span style={{ position: 'relative', display: 'flex', width: 7, height: 7, flexShrink: 0 }}>
+              <span style={{
+                position: 'absolute', inset: 0, borderRadius: '50%',
+                background: '#4ade80', opacity: 0.7,
+                animation: 'ping 1.5s ease-in-out infinite',
+              }} />
+              <span style={{ borderRadius: '50%', background: '#4ade80', width: 7, height: 7, flexShrink: 0 }} />
             </span>
           </div>
           {(subtitle || screenLabel) && (
-            <p className="text-[11px] text-white/70 leading-tight truncate mt-0.5">
-              {subtitle ?? `Context: ${screenLabel}`}
-            </p>
+            <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.65)', marginTop: 1, display: 'block' }}>
+              {subtitle ?? `${screenLabel} context`}
+            </span>
           )}
         </div>
       </div>
 
-      {/* Right: actions */}
-      <div className="flex items-center gap-0.5 shrink-0">
+      {/* Right actions */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
         {messageCount > 0 && (
-          <button
-            onClick={onClear}
-            title="Clear conversation"
-            className="p-2 rounded-lg text-white/70 hover:text-white hover:bg-white/20 transition-colors"
-          >
-            <Trash2 size={15} strokeWidth={1.75} />
+          <button onClick={onClear} title="Clear chat" style={{ ...iconBtn, color: 'rgba(255,255,255,0.7)' }}>
+            <Trash2 size={14} strokeWidth={1.75} />
           </button>
         )}
         <button
-          onClick={onClose}
-          title="Close"
-          className="p-2 rounded-lg text-white/70 hover:text-white hover:bg-white/20 transition-colors"
+          onClick={onToggleMode}
+          title={mode === 'float' ? 'Expand to sidebar' : 'Minimize to card'}
+          style={{ ...iconBtn, color: 'rgba(255,255,255,0.7)' }}
         >
-          <X size={17} strokeWidth={2} />
+          {mode === 'float'
+            ? <Maximize2 size={14} strokeWidth={2} />
+            : <Minimize2 size={14} strokeWidth={2} />
+          }
+        </button>
+        <button onClick={onClose} title="Close" style={{ ...iconBtn, color: 'rgba(255,255,255,0.7)' }}>
+          <X size={16} strokeWidth={2} />
         </button>
       </div>
-    </header>
+    </div>
   );
 }
 
@@ -429,91 +445,93 @@ function PanelHeader({
 function ThreadSidebar({
   threads, currentThreadId, accentColor, onNew, onSwitch, onDelete,
 }: {
-  threads: Thread[];
-  currentThreadId: string;
-  accentColor: string;
-  onNew: () => void;
-  onSwitch: (id: string) => void;
-  onDelete?: (id: string) => void;
+  threads: Thread[]; currentThreadId: string; accentColor: string;
+  onNew: () => void; onSwitch: (id: string) => void; onDelete?: (id: string) => void;
 }) {
-  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [hoverId, setHoverId] = useState<string | null>(null);
 
-  function relativeTime(iso: string) {
-    const diff = Date.now() - new Date(iso).getTime();
-    const mins = Math.floor(diff / 60000);
-    if (mins < 1)  return 'just now';
-    if (mins < 60) return `${mins}m ago`;
-    const hrs = Math.floor(mins / 60);
-    if (hrs < 24)  return `${hrs}h ago`;
-    return `${Math.floor(hrs / 24)}d ago`;
+  function relTime(iso: string) {
+    const d = Date.now() - new Date(iso).getTime();
+    const m = Math.floor(d / 60000);
+    if (m < 1) return 'just now';
+    if (m < 60) return `${m}m`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}h`;
+    return `${Math.floor(h / 24)}d`;
   }
 
   return (
-    <div
-      className="w-[180px] shrink-0 flex flex-col border-r border-slate-100 bg-white overflow-hidden"
-      style={{ background: '#fafafa' }}
-    >
-      {/* New thread button */}
+    <div style={{
+      width: 168, flexShrink: 0, display: 'flex', flexDirection: 'column',
+      borderRight: '1px solid rgba(0,0,0,0.06)', background: '#fafafa', overflow: 'hidden',
+    }}>
+      {/* New thread */}
       <button
         onClick={onNew}
-        className="flex items-center gap-2 px-3 py-3 text-xs font-semibold border-b border-slate-100
-                   hover:bg-slate-50 transition-colors w-full text-left"
-        style={{ color: accentColor }}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          padding: '11px 14px', borderBottom: '1px solid rgba(0,0,0,0.06)',
+          background: 'transparent', border: 'none', cursor: 'pointer',
+          color: accentColor, fontSize: 12, fontWeight: 600, width: '100%',
+        }}
       >
         <Plus size={13} strokeWidth={2.5} />
-        New thread
+        New chat
       </button>
 
-      {/* Thread list */}
-      <div className="flex-1 overflow-y-auto">
-        {threads.map(thread => {
-          const isActive = thread.id === currentThreadId;
-          const isHovered = hoveredId === thread.id;
-
+      {/* List */}
+      <div style={{ flex: 1, overflowY: 'auto' }}>
+        {threads.map(t => {
+          const active = t.id === currentThreadId;
           return (
             <div
-              key={thread.id}
-              className="relative group"
-              onMouseEnter={() => setHoveredId(thread.id)}
-              onMouseLeave={() => setHoveredId(null)}
+              key={t.id}
+              style={{ position: 'relative' }}
+              onMouseEnter={() => setHoverId(t.id)}
+              onMouseLeave={() => setHoverId(null)}
             >
+              {/* Active bar */}
+              {active && (
+                <div style={{
+                  position: 'absolute', left: 0, top: 6, bottom: 6,
+                  width: 3, borderRadius: '0 3px 3px 0', background: accentColor,
+                }} />
+              )}
               <button
-                onClick={() => onSwitch(thread.id)}
-                className={`w-full text-left px-3 py-2.5 transition-colors ${
-                  isActive
-                    ? 'bg-slate-100'
-                    : 'hover:bg-slate-50'
-                }`}
+                onClick={() => onSwitch(t.id)}
+                style={{
+                  display: 'block', width: '100%', textAlign: 'left',
+                  padding: '10px 14px 10px 18px',
+                  background: active ? `${accentColor}0f` : hoverId === t.id ? '#f0f0f5' : 'transparent',
+                  border: 'none', cursor: 'pointer',
+                }}
               >
-                {/* Active indicator bar */}
-                {isActive && (
-                  <span
-                    className="absolute left-0 top-1 bottom-1 w-0.5 rounded-r"
-                    style={{ background: accentColor }}
-                  />
-                )}
-                <p
-                  className={`text-xs leading-snug line-clamp-2 pr-4 ${
-                    isActive ? 'font-medium text-slate-800' : 'text-slate-600'
-                  }`}
-                >
-                  {thread.title}
-                </p>
-                <div className="flex items-center gap-1 mt-1">
-                  <Clock size={9} className="text-slate-300 shrink-0" />
-                  <span className="text-[10px] text-slate-400">
-                    {relativeTime(thread.updatedAt)}
-                  </span>
+                <div style={{
+                  fontSize: 11.5, lineHeight: 1.4, color: active ? '#1e1e2e' : '#555',
+                  fontWeight: active ? 600 : 400,
+                  overflow: 'hidden', display: '-webkit-box',
+                  WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+                  paddingRight: 16,
+                }}>
+                  {t.title}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 4 }}>
+                  <Clock size={9} color="#aaa" />
+                  <span style={{ fontSize: 10, color: '#aaa' }}>{relTime(t.updatedAt)}</span>
                 </div>
               </button>
 
-              {/* Delete button — appears on hover */}
-              {onDelete && isHovered && (
+              {/* Delete on hover */}
+              {onDelete && hoverId === t.id && (
                 <button
-                  onClick={e => { e.stopPropagation(); onDelete(thread.id); }}
-                  title="Delete thread"
-                  className="absolute right-1.5 top-1/2 -translate-y-1/2 p-1 rounded
-                             text-slate-300 hover:text-red-400 hover:bg-red-50 transition-colors"
+                  onClick={e => { e.stopPropagation(); onDelete(t.id); }}
+                  style={{
+                    position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)',
+                    padding: 4, borderRadius: 6, border: 'none', cursor: 'pointer',
+                    background: 'transparent', color: '#ccc',
+                  }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.color = '#ef4444'; (e.currentTarget as HTMLButtonElement).style.background = '#fef2f2'; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color = '#ccc'; (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; }}
                 >
                   <Trash2 size={11} strokeWidth={1.75} />
                 </button>
@@ -535,53 +553,60 @@ function EmptyState({
   suggestions: readonly string[]; onSuggestion: (s: string, i: number) => void;
 }) {
   return (
-    <div className="h-full min-h-[400px] flex flex-col items-center justify-center px-6 pb-6 pt-8 text-center">
-      {/* Icon / logo */}
-      <div
-        className="w-16 h-16 rounded-2xl flex items-center justify-center mb-4 shadow-md"
-        style={{ background: `linear-gradient(135deg, ${accentColor}22 0%, ${accentColor}44 100%)` }}
-      >
-        {logoUrl ? (
-          <img src={logoUrl} alt={title} className="w-10 h-10 object-contain" />
-        ) : (
-          <Sparkles size={28} strokeWidth={1.5} style={{ color: accentColor }} />
-        )}
+    <div style={{
+      display: 'flex', flexDirection: 'column', alignItems: 'center',
+      justifyContent: 'center', padding: '32px 20px', minHeight: 400, textAlign: 'center',
+    }}>
+      {/* Icon */}
+      <div style={{
+        width: 60, height: 60, borderRadius: 18,
+        background: `linear-gradient(135deg, ${accentColor}18, ${accentColor}35)`,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        marginBottom: 16, boxShadow: `0 4px 20px ${accentColor}25`,
+      }}>
+        {logoUrl
+          ? <img src={logoUrl} alt={title} style={{ width: 36, height: 36, objectFit: 'contain' }} />
+          : <Sparkles size={26} strokeWidth={1.5} color={accentColor} />
+        }
       </div>
 
-      <h4 className="text-[15px] font-semibold text-slate-800">How can I help you?</h4>
-      <p className="text-sm text-slate-400 mt-1.5 max-w-[280px] leading-relaxed">
+      <h4 style={{ fontSize: 15, fontWeight: 700, color: '#1a1a2e', margin: '0 0 6px' }}>
+        How can I help you?
+      </h4>
+      <p style={{ fontSize: 13, color: '#94a3b8', lineHeight: 1.6, maxWidth: 260, margin: 0 }}>
         {screenLabel
-          ? `Ask anything about your ${screenLabel} data — I'll pull live numbers.`
-          : "Ask about your data, metrics, or trends and I’ll find the answers."}
+          ? `Ask anything about your ${screenLabel} data — I'll fetch live results.`
+          : "Ask about your data, metrics, or trends."}
       </p>
 
       {suggestions.length > 0 && (
-        <div className="w-full mt-6 space-y-2">
-          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center justify-center gap-1.5">
-            <Zap size={10} className="text-slate-300" />
-            Suggested questions
+        <div style={{ width: '100%', marginTop: 24, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <p style={{ fontSize: 10, fontWeight: 700, color: '#cbd5e1', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 4 }}>
+            Try asking
           </p>
           {suggestions.map((s, i) => (
             <button
               key={i}
               onClick={() => onSuggestion(s, i)}
-              className="w-full flex items-center justify-between gap-2 px-4 py-3 text-left text-sm
-                         text-slate-600 bg-white border border-slate-200/80 rounded-xl
-                         hover:border-opacity-80 hover:shadow-sm active:scale-[0.99]
-                         group transition-all duration-150"
               style={{
-                // @ts-ignore
-                '--hover-border': accentColor,
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                gap: 8, padding: '11px 16px', textAlign: 'left',
+                background: '#fff', border: '1px solid #e8eaf0', borderRadius: 12,
+                cursor: 'pointer', fontSize: 13, color: '#4a4a6a', lineHeight: 1.4,
+                boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+                transition: 'all 0.15s ease',
               }}
-              onMouseEnter={e => (e.currentTarget.style.borderColor = accentColor + '60')}
-              onMouseLeave={e => (e.currentTarget.style.borderColor = '')}
+              onMouseEnter={e => {
+                (e.currentTarget as HTMLButtonElement).style.borderColor = accentColor + '60';
+                (e.currentTarget as HTMLButtonElement).style.boxShadow = `0 2px 8px ${accentColor}18`;
+              }}
+              onMouseLeave={e => {
+                (e.currentTarget as HTMLButtonElement).style.borderColor = '#e8eaf0';
+                (e.currentTarget as HTMLButtonElement).style.boxShadow = '0 1px 3px rgba(0,0,0,0.04)';
+              }}
             >
-              <span className="leading-snug">{s}</span>
-              <ChevronRight
-                size={14}
-                className="shrink-0 text-slate-300 group-hover:text-slate-500 transition-colors"
-                style={{ color: '' }}
-              />
+              <span>{s}</span>
+              <ChevronRight size={13} color="#cbd5e1" strokeWidth={2.5} style={{ flexShrink: 0 }} />
             </button>
           ))}
         </div>
@@ -592,23 +617,26 @@ function EmptyState({
 
 // ── InputBar ──────────────────────────────────────────────────────────────────
 
-const InputBar = React.forwardRef<
-  HTMLTextAreaElement,
-  {
-    value: string; isLoading: boolean; accentColor: string; screenLabel?: string;
-    onChange: (v: string) => void; onSend: () => void; onCancel?: () => void;
-  }
->(({ value, isLoading, accentColor, screenLabel, onChange, onSend, onCancel }, ref) => {
+const InputBar = React.forwardRef<HTMLTextAreaElement, {
+  value: string; isLoading: boolean; accentColor: string; screenLabel?: string;
+  onChange: (v: string) => void; onSend: () => void; onCancel?: () => void;
+}>(({ value, isLoading, accentColor, screenLabel, onChange, onSend, onCancel }, ref) => {
   const canSend = !!value.trim() && !isLoading;
 
   return (
-    <div className="shrink-0 bg-white border-t border-slate-100 px-3 pt-2.5 pb-3">
-      <div
-        className="flex items-end gap-2 bg-slate-50 border border-slate-200 rounded-2xl px-3 py-2
-                   focus-within:border-opacity-60 focus-within:shadow-sm transition-all"
-        style={{ '--focus-color': accentColor } as React.CSSProperties}
-        onFocusCapture={e => (e.currentTarget.style.borderColor = accentColor + '80')}
-        onBlurCapture={e => (e.currentTarget.style.borderColor = '')}
+    <div style={{
+      padding: '12px 14px 14px', borderTop: '1px solid rgba(0,0,0,0.06)',
+      background: '#fff', flexShrink: 0,
+    }}>
+      <div style={{
+        display: 'flex', alignItems: 'flex-end', gap: 8,
+        background: '#f4f5f9', borderRadius: 14,
+        padding: '10px 10px 10px 14px',
+        border: '1.5px solid transparent',
+        transition: 'border-color 0.15s',
+      }}
+        onFocusCapture={e => (e.currentTarget.style.borderColor = accentColor + '60')}
+        onBlurCapture={e => (e.currentTarget.style.borderColor = 'transparent')}
       >
         <textarea
           ref={ref}
@@ -620,39 +648,52 @@ const InputBar = React.forwardRef<
           }}
           placeholder="Ask me anything…"
           disabled={isLoading}
-          className="flex-1 resize-none bg-transparent text-sm text-slate-800 placeholder:text-slate-400
-                     focus:outline-none disabled:opacity-50 leading-relaxed py-0.5"
-          style={{ maxHeight: 120 }}
+          style={{
+            flex: 1, resize: 'none', border: 'none', outline: 'none',
+            background: 'transparent', fontSize: 13.5, color: '#1a1a2e',
+            lineHeight: 1.55, fontFamily: 'inherit', maxHeight: 112,
+            padding: 0,
+          }}
         />
 
-        {/* Send / cancel */}
         {isLoading ? (
           <button
             onClick={onCancel}
             title="Stop generating"
-            className="w-8 h-8 flex items-center justify-center rounded-xl shrink-0 mb-0.5
-                       text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors"
+            style={{
+              width: 34, height: 34, borderRadius: 10, border: 'none',
+              cursor: 'pointer', display: 'flex', alignItems: 'center',
+              justifyContent: 'center', background: '#fee2e2', color: '#ef4444',
+              flexShrink: 0,
+            }}
           >
-            <Loader2 size={16} className="animate-spin" />
+            <Loader2 size={15} style={{ animation: 'spin 1s linear infinite' }} />
           </button>
         ) : (
           <button
             onClick={onSend}
             disabled={!canSend}
             title="Send (Enter)"
-            className="w-8 h-8 flex items-center justify-center rounded-xl shrink-0 mb-0.5
-                       text-white shadow-sm active:scale-90
-                       disabled:opacity-35 disabled:cursor-not-allowed transition-all"
-            style={{ background: canSend ? accentColor : '#94a3b8' }}
+            style={{
+              width: 34, height: 34, borderRadius: 10, border: 'none',
+              cursor: canSend ? 'pointer' : 'default',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              background: canSend ? accentColor : '#e2e4ed',
+              color: '#fff', flexShrink: 0,
+              transition: 'background 0.15s, transform 0.1s',
+              transform: 'scale(1)',
+            }}
+            onMouseDown={e => canSend && ((e.currentTarget as HTMLButtonElement).style.transform = 'scale(0.92)')}
+            onMouseUp={e => ((e.currentTarget as HTMLButtonElement).style.transform = 'scale(1)')}
           >
             <Send size={14} strokeWidth={2.5} />
           </button>
         )}
       </div>
 
-      <p className="text-[10px] text-slate-300 text-center mt-1.5">
-        {screenLabel && <><span className="text-slate-400 font-medium capitalize">{screenLabel}</span> · </>}
-        Enter ↵ to send · Shift+Enter for new line
+      <p style={{ fontSize: 10.5, color: '#c0c4d4', textAlign: 'center', marginTop: 8, lineHeight: 1 }}>
+        {screenLabel && <><strong style={{ color: '#b0b5ca', fontWeight: 600 }}>{screenLabel}</strong> · </>}
+        Enter ↵ send &nbsp;·&nbsp; Shift+Enter new line
       </p>
     </div>
   );
@@ -661,16 +702,22 @@ InputBar.displayName = 'InputBar';
 
 // ── TypingIndicator ───────────────────────────────────────────────────────────
 
-function TypingIndicator() {
+function TypingIndicator({ accentColor }: { accentColor: string }) {
   return (
-    <div className="flex items-end gap-2.5">
-      <AgentAvatar />
-      <div className="bg-white border border-slate-100 shadow-sm rounded-2xl rounded-bl-sm px-4 py-3.5 flex gap-1.5 items-center">
+    <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10 }}>
+      <AgentAvatar accentColor={accentColor} />
+      <div style={{
+        background: '#fff', borderRadius: '18px 18px 18px 4px',
+        padding: '12px 16px', display: 'flex', gap: 5, alignItems: 'center',
+        boxShadow: '0 1px 6px rgba(0,0,0,0.07)',
+      }}>
         {[0, 1, 2].map(i => (
-          <span
+          <div
             key={i}
-            className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce"
-            style={{ animationDelay: `${i * 0.16}s`, animationDuration: '1s' }}
+            style={{
+              width: 6, height: 6, borderRadius: '50%', background: '#c8ccd8',
+              animation: `bounce 1.2s ease-in-out ${i * 0.18}s infinite`,
+            }}
           />
         ))}
       </div>
@@ -680,22 +727,25 @@ function TypingIndicator() {
 
 // ── MessageBubble ─────────────────────────────────────────────────────────────
 
-const INSIGHT_META = {
-  warning:  { icon: AlertTriangle, bg: 'bg-amber-50',  border: 'border-amber-200', text: 'text-amber-800',  ic: 'text-amber-500' },
-  positive: { icon: TrendingUp,    bg: 'bg-emerald-50', border: 'border-emerald-200', text: 'text-emerald-800', ic: 'text-emerald-500' },
-  neutral:  { icon: Info,          bg: 'bg-slate-50',  border: 'border-slate-200',  text: 'text-slate-700',  ic: 'text-slate-400' },
+const INSIGHT_STYLES = {
+  warning: { bg: '#fffbeb', border: '#fcd34d', icon: AlertTriangle, iconColor: '#f59e0b', text: '#92400e' },
+  positive: { bg: '#f0fdf4', border: '#86efac', icon: TrendingUp, iconColor: '#22c55e', text: '#14532d' },
+  neutral: { bg: '#f8fafc', border: '#e2e8f0', icon: Info, iconColor: '#94a3b8', text: '#475569' },
 } as const;
 
-function MessageBubble({
-  message, accentColor, feedbackGiven, onFeedback, isLast,
-}: {
-  message:       AgentMessage;
-  accentColor:   string;
+function MessageBubble({ message, accentColor, feedbackGiven, onFeedback, isLast }: {
+  message: AgentMessage; accentColor: string;
   feedbackGiven?: 'positive' | 'negative';
-  onFeedback:    (m: AgentMessage, t: 'positive' | 'negative') => void;
-  isLast:        boolean;
+  onFeedback: (m: AgentMessage, t: 'positive' | 'negative') => void;
+  isLast: boolean;
 }) {
   const [copied, setCopied] = useState(false);
+  const [hovered, setHovered] = useState(false);
+
+  const timeLabel = useMemo(() =>
+    new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    [message.timestamp],
+  );
 
   const handleCopy = useCallback(() => {
     const text = message.response?.narrative ?? message.content ?? '';
@@ -705,43 +755,42 @@ function MessageBubble({
     });
   }, [message]);
 
-  const timeLabel = useMemo(() =>
-    new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    [message.timestamp],
-  );
-
-  // ── User message ───────────────────────────────────────────────────────────
+  // User bubble
   if (message.role === 'user') {
     return (
-      <div className="flex justify-end items-end gap-2">
-        <div
-          className="max-w-[78%] text-sm text-white rounded-2xl rounded-br-sm px-4 py-2.5
-                     leading-relaxed shadow-sm"
-          style={{ background: accentColor }}
-        >
-          <p className="whitespace-pre-wrap break-words">{message.content}</p>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'flex-end', gap: 8 }}>
+        <div style={{
+          maxWidth: '78%', background: accentColor, color: '#fff',
+          borderRadius: '18px 18px 4px 18px', padding: '10px 15px',
+          fontSize: 13.5, lineHeight: 1.55, boxShadow: `0 2px 12px ${accentColor}40`,
+        }}>
+          <p style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{message.content}</p>
         </div>
-        <div className="w-7 h-7 rounded-full bg-slate-200 flex items-center justify-center shrink-0 text-slate-500 text-[11px] font-bold">
-          U
-        </div>
+        <div style={{
+          width: 28, height: 28, borderRadius: '50%', background: '#e8eaf0',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 11, fontWeight: 700, color: '#64748b', flexShrink: 0,
+        }}>U</div>
       </div>
     );
   }
 
-  // ── Loading bubble ─────────────────────────────────────────────────────────
+  // Loading bubble
   if (message.loading) {
-    return <TypingIndicator />;
+    return <TypingIndicator accentColor={accentColor} />;
   }
 
-  // ── Error bubble ───────────────────────────────────────────────────────────
+  // Error bubble
   if (message.error) {
     return (
-      <div className="flex items-start gap-2.5">
-        <AgentAvatar error />
-        <div className="bg-red-50 border border-red-200 text-red-600 text-sm rounded-2xl rounded-tl-sm
-                        px-4 py-3 leading-relaxed max-w-[82%]">
-          <p className="font-medium text-xs text-red-400 mb-1">Something went wrong</p>
-          <p>{message.error}</p>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+        <AgentAvatar accentColor="#ef4444" error />
+        <div style={{
+          background: '#fff5f5', border: '1px solid #fecaca', borderRadius: '18px 18px 18px 4px',
+          padding: '12px 15px', maxWidth: '82%',
+        }}>
+          <p style={{ fontSize: 11, fontWeight: 600, color: '#f87171', margin: '0 0 4px' }}>Something went wrong</p>
+          <p style={{ fontSize: 13, color: '#ef4444', margin: 0 }}>{message.error}</p>
         </div>
       </div>
     );
@@ -750,153 +799,204 @@ function MessageBubble({
   const res = message.response;
   const narrative = res?.narrative ?? message.content ?? '';
 
-  // ── Assistant message ──────────────────────────────────────────────────────
+  // Agent bubble
   return (
-    <div className="flex items-start gap-2.5 group">
+    <div
+      style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
       <AgentAvatar accentColor={accentColor} />
 
-      <div className="flex-1 min-w-0 max-w-[85%] space-y-2">
-        {/* Narrative */}
-        <div className="bg-white border border-slate-100 shadow-sm rounded-2xl rounded-tl-sm px-4 py-3
-                        text-sm text-slate-800 leading-relaxed">
+      <div style={{ flex: 1, minWidth: 0, maxWidth: '86%', display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {/* Narrative bubble */}
+        <div style={{
+          background: '#fff', borderRadius: '18px 18px 18px 4px',
+          padding: '12px 16px', boxShadow: '0 1px 6px rgba(0,0,0,0.07)',
+        }}>
           <FormattedText text={narrative} />
         </div>
 
         {/* Insight cards */}
         {res?.insights?.map((ins, i) => {
-          const meta = INSIGHT_META[ins.type as keyof typeof INSIGHT_META] ?? INSIGHT_META.neutral;
+          const s = INSIGHT_STYLES[ins.type as keyof typeof INSIGHT_STYLES] ?? INSIGHT_STYLES.neutral;
           return (
             <div
               key={i}
-              className={`flex gap-2.5 rounded-xl px-3 py-2.5 text-xs border
-                          ${meta.bg} ${meta.border}`}
+              style={{
+                display: 'flex', gap: 10, borderRadius: 10,
+                padding: '10px 12px', border: `1px solid ${s.border}`,
+                background: s.bg,
+              }}
             >
-              <meta.icon size={13} className={`${meta.ic} shrink-0 mt-0.5`} strokeWidth={2} />
-              <div className={meta.text}>
-                <p className="font-semibold">{ins.title}</p>
-                <p className="opacity-70 mt-0.5">{ins.detail}</p>
+              <s.icon size={13} color={s.iconColor} strokeWidth={2} style={{ flexShrink: 0, marginTop: 1 }} />
+              <div>
+                <p style={{ fontSize: 12, fontWeight: 600, color: s.text, margin: 0 }}>{ins.title}</p>
+                <p style={{ fontSize: 11.5, color: s.text, opacity: 0.75, margin: '2px 0 0' }}>{ins.detail}</p>
               </div>
             </div>
           );
         })}
 
-        {/* Footer row */}
-        <div className="flex items-center justify-between pl-0.5 pr-0.5">
-          {/* Left: confidence + source + time */}
-          <div className="flex items-center gap-2 text-[10px] text-slate-400 min-w-0">
-            {res && (
-              <>
-                <ConfidenceBadge level={res.confidence} />
-                {res.apisCalled?.length > 0 && (
-                  <span className="truncate text-slate-400" title={res.apisCalled.join(', ')}>
-                    via {res.apisCalled[0]}
-                    {res.apisCalled.length > 1 ? ` +${res.apisCalled.length - 1}` : ''}
-                  </span>
-                )}
-              </>
+        {/* Footer */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 2px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            {res && <ConfidenceBadge level={res.confidence} />}
+            {res && (res.apisCalled?.length ?? 0) > 0 && (
+              <span style={{ fontSize: 10.5, color: '#94a3b8' }} title={res.apisCalled?.join(', ')}>
+                via {res.apisCalled?.[0]}{(res.apisCalled?.length ?? 0) > 1 ? ` +${(res.apisCalled?.length ?? 0) - 1}` : ''}
+              </span>
             )}
-            <span className="text-slate-300 shrink-0">{timeLabel}</span>
+            <span style={{ fontSize: 10.5, color: '#c8ccd8' }}>{timeLabel}</span>
           </div>
 
-          {/* Right: copy + feedback */}
-          <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-            {/* Copy */}
+          {/* Actions — visible on hover */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 2, opacity: hovered ? 1 : 0, transition: 'opacity 0.15s' }}>
             <button
               onClick={handleCopy}
-              title="Copy response"
-              className="p-1.5 rounded-lg text-slate-300 hover:text-slate-500 hover:bg-slate-100 transition-colors"
+              title="Copy"
+              style={{ ...actionBtn, color: copied ? '#22c55e' : '#c8ccd8' }}
+              onMouseEnter={e => !copied && ((e.currentTarget as HTMLButtonElement).style.color = '#64748b')}
+              onMouseLeave={e => !copied && ((e.currentTarget as HTMLButtonElement).style.color = '#c8ccd8')}
             >
-              {copied ? <Check size={11} strokeWidth={2.5} className="text-emerald-500" /> : <Copy size={11} strokeWidth={2} />}
+              {copied ? <Check size={11} strokeWidth={2.5} /> : <Copy size={11} strokeWidth={2} />}
             </button>
-
-            {/* Thumbs */}
             {(['positive', 'negative'] as const).map(type => (
               <button
                 key={type}
                 onClick={() => onFeedback(message, type)}
                 disabled={!!feedbackGiven}
-                title={type === 'positive' ? 'Good response' : 'Bad response'}
-                className={`p-1.5 rounded-lg transition-all ${
-                  feedbackGiven === type
-                    ? type === 'positive' ? 'text-emerald-500 bg-emerald-50' : 'text-red-500 bg-red-50'
-                    : feedbackGiven
-                      ? 'text-slate-200 cursor-default'
-                      : type === 'positive'
-                        ? 'text-slate-300 hover:text-emerald-500 hover:bg-emerald-50'
-                        : 'text-slate-300 hover:text-red-500 hover:bg-red-50'
-                }`}
+                title={type === 'positive' ? 'Good' : 'Bad'}
+                style={{
+                  ...actionBtn,
+                  color: feedbackGiven === type
+                    ? type === 'positive' ? '#22c55e' : '#ef4444'
+                    : '#c8ccd8',
+                }}
+                onMouseEnter={e => !feedbackGiven && ((e.currentTarget as HTMLButtonElement).style.color = type === 'positive' ? '#22c55e' : '#ef4444')}
+                onMouseLeave={e => !feedbackGiven && ((e.currentTarget as HTMLButtonElement).style.color = '#c8ccd8')}
               >
-                {type === 'positive'
-                  ? <ThumbsUp size={11} strokeWidth={2} />
-                  : <ThumbsDown size={11} strokeWidth={2} />
-                }
+                {type === 'positive' ? <ThumbsUp size={11} strokeWidth={2} /> : <ThumbsDown size={11} strokeWidth={2} />}
               </button>
             ))}
-            {feedbackGiven && (
-              <span className="text-[10px] text-slate-300 ml-0.5">Thanks!</span>
-            )}
           </div>
+
         </div>
       </div>
     </div>
   );
 }
 
-// ── Sub-components ────────────────────────────────────────────────────────────
+// ── Shared sub-components ─────────────────────────────────────────────────────
 
-function AgentAvatar({ error, accentColor }: { error?: boolean; accentColor?: string }) {
+function AgentAvatar({ accentColor, error }: { accentColor: string; error?: boolean }) {
   return (
-    <div
-      className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${error ? 'bg-red-100' : ''}`}
-      style={!error ? { background: `${accentColor ?? ACCENT_DEFAULT}22` } : undefined}
-    >
-      <Sparkles
-        size={13}
-        strokeWidth={2}
-        style={{ color: error ? '#ef4444' : (accentColor ?? ACCENT_DEFAULT) }}
-      />
+    <div style={{
+      width: 28, height: 28, borderRadius: '50%', flexShrink: 0,
+      background: error ? '#fee2e2' : `${accentColor}1a`,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }}>
+      <Sparkles size={13} strokeWidth={2} color={error ? '#ef4444' : accentColor} />
     </div>
   );
 }
 
 function ConfidenceBadge({ level }: { level?: string }) {
   if (!level) return null;
-  const styles: Record<string, string> = {
-    high:   'bg-emerald-100 text-emerald-700',
-    medium: 'bg-amber-100 text-amber-700',
-    low:    'bg-slate-100 text-slate-500',
+  const map: Record<string, { bg: string; color: string }> = {
+    high: { bg: '#f0fdf4', color: '#16a34a' },
+    medium: { bg: '#fffbeb', color: '#d97706' },
+    low: { bg: '#f8fafc', color: '#94a3b8' },
   };
+  const s = map[level] ?? map.low;
   return (
-    <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-semibold shrink-0 ${styles[level] ?? styles.low}`}>
+    <span style={{
+      padding: '2px 7px', borderRadius: 20, fontSize: 10, fontWeight: 700,
+      background: s.bg, color: s.color, letterSpacing: '0.02em',
+    }}>
       {level}
     </span>
   );
 }
 
-/** Minimal inline-text formatter: **bold**, bullet lines starting with - or • */
 function FormattedText({ text }: { text: string }) {
+  if (!text) return null;
   const lines = text.split('\n');
   return (
-    <div className="space-y-1">
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
       {lines.map((line, i) => {
         const isBullet = /^[\-•]\s/.test(line.trimStart());
-        const trimmed  = isBullet ? line.trimStart().slice(2).trim() : line;
-        const parts    = trimmed.split(/(\*\*[^*]+\*\*)/g);
+        const trimmed = isBullet ? line.trimStart().slice(2).trim() : line;
+        const parts = trimmed.split(/(\*\*[^*]+\*\*)/g);
         const rendered = parts.map((p, j) =>
           p.startsWith('**') && p.endsWith('**')
-            ? <strong key={j} className="font-semibold text-slate-900">{p.slice(2, -2)}</strong>
+            ? <strong key={j} style={{ fontWeight: 700, color: '#1e1e2e' }}>{p.slice(2, -2)}</strong>
             : <span key={j}>{p}</span>,
         );
         if (isBullet) {
           return (
-            <div key={i} className="flex items-start gap-1.5">
-              <span className="mt-1.5 w-1 h-1 rounded-full bg-slate-400 shrink-0" />
-              <span>{rendered}</span>
+            <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+              <span style={{ marginTop: 7, width: 4, height: 4, borderRadius: '50%', background: '#94a3b8', flexShrink: 0 }} />
+              <span style={{ fontSize: 13.5, color: '#374151', lineHeight: 1.6 }}>{rendered}</span>
             </div>
           );
         }
-        return <p key={i} className={line.trim() === '' ? 'h-2' : ''}>{rendered}</p>;
+        if (!line.trim()) return <div key={i} style={{ height: 4 }} />;
+        return (
+          <p key={i} style={{ margin: 0, fontSize: 13.5, color: '#374151', lineHeight: 1.6 }}>
+            {rendered}
+          </p>
+        );
       })}
     </div>
   );
+}
+
+// ── Style helpers ─────────────────────────────────────────────────────────────
+
+const iconBtn: React.CSSProperties = {
+  width: 30, height: 30, borderRadius: 8, border: 'none',
+  cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+  background: 'transparent', transition: 'background 0.15s, color 0.15s',
+};
+
+const actionBtn: React.CSSProperties = {
+  padding: 5, borderRadius: 6, border: 'none', cursor: 'pointer',
+  background: 'transparent', display: 'flex', alignItems: 'center', transition: 'color 0.12s',
+};
+
+// ── Tiny hex brightness adjuster (for gradient end-stop) ─────────────────────
+
+function adjustHex(hex: string, amount: number): string {
+  try {
+    const n = parseInt(hex.replace('#', ''), 16);
+    const clamp = (v: number) => Math.max(0, Math.min(255, v));
+    const r = clamp(((n >> 16) & 0xff) + amount);
+    const g = clamp(((n >> 8) & 0xff) + amount);
+    const b = clamp((n & 0xff) + amount);
+    return `#${[r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')}`;
+  } catch {
+    return hex;
+  }
+}
+
+// ── Inject keyframe animations once ──────────────────────────────────────────
+
+if (typeof document !== 'undefined' && !document.getElementById('agent-panel-styles')) {
+  const style = document.createElement('style');
+  style.id = 'agent-panel-styles';
+  style.textContent = `
+    @keyframes bounce {
+      0%, 60%, 100% { transform: translateY(0); }
+      30% { transform: translateY(-5px); }
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    @keyframes ping {
+      0%, 100% { transform: scale(1); opacity: 0.7; }
+      50% { transform: scale(1.6); opacity: 0; }
+    }
+  `;
+  document.head.appendChild(style);
 }
