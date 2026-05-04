@@ -4,6 +4,7 @@ export type {
   AgentResponse,
   AgentMessage,
   AgentInsight,
+  Thread,
   ApiDefinition,
   ApiParameter,
 } from './types';
@@ -14,7 +15,7 @@ export type { AnalyseOptions, LoginResult } from './client';
 
 // ── React hook ────────────────────────────────────────────────────────────────
 export { createUseAgent }    from './hook';
-export type { UseAgentOptions } from './hook';
+export type { UseAgentOptions, UseAgentResult } from './hook';
 
 // ── UI panel ─────────────────────────────────────────────────────────────────
 export { AgentPanel }        from './panel';

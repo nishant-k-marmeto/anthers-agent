@@ -39,8 +39,9 @@ import {
   TrendingUp, AlertTriangle, Info,
   Sparkles, MessageSquare, ChevronRight,
   Bot, Zap, Copy, Check,
+  Plus, Clock, MoreVertical,
 } from 'lucide-react';
-import type { AgentMessage } from './types';
+import type { AgentMessage, Thread } from './types';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -53,11 +54,17 @@ export type TrackEvent =
   | 'panel_opened';
 
 export interface AgentHookResult {
-  messages:       AgentMessage[];
-  isLoading:      boolean;
-  sendMessage:    (msg: string) => void;
-  clearMessages:  () => void;
-  cancelRequest?: () => void;
+  messages:        AgentMessage[];
+  isLoading:       boolean;
+  sendMessage:     (msg: string) => void;
+  clearMessages:   () => void;
+  cancelRequest?:  () => void;
+  // Thread management
+  threads?:        Thread[];
+  currentThreadId?: string;
+  newThread?:      () => void;
+  switchThread?:   (id: string) => void;
+  deleteThread?:   (id: string) => void;
 }
 
 export interface AgentPanelProps {
@@ -126,7 +133,13 @@ export function AgentPanel({
   onFeedback,
   onTrack,
 }: AgentPanelProps) {
-  const { messages, isLoading, sendMessage, clearMessages, cancelRequest } = agent;
+  const {
+    messages, isLoading, sendMessage, clearMessages, cancelRequest,
+    threads, currentThreadId, newThread, switchThread, deleteThread,
+  } = agent;
+
+  const hasThreads = !!(threads && threads.length > 0 && newThread && switchThread);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const [input,     setInput]     = useState('');
   const [feedback,  setFeedback]  = useState<Record<string, 'positive' | 'negative'>>({});
@@ -263,43 +276,61 @@ export function AgentPanel({
           screenLabel={screenLabel}
           isFloating={isFloating}
           messageCount={messages.length}
+          hasThreads={hasThreads}
+          sidebarOpen={sidebarOpen}
+          onToggleSidebar={() => setSidebarOpen(o => !o)}
           onClear={handleClear}
           onClose={handleClose}
         />
 
-        {/* ── Message list ─────────────────────────────────────────────────── */}
-        <div
-          ref={scrollRef}
-          className="flex-1 overflow-y-auto overscroll-contain scroll-smooth"
-          style={{ background: '#f8f9fc' }}
-        >
-          {messages.length === 0 ? (
-            <EmptyState
-              title={title}
-              logoUrl={logoUrl}
+        {/* ── Body (sidebar + messages) ─────────────────────────────────────── */}
+        <div className="flex flex-1 overflow-hidden">
+
+          {/* Thread sidebar */}
+          {hasThreads && sidebarOpen && (
+            <ThreadSidebar
+              threads={threads!}
+              currentThreadId={currentThreadId!}
               accentColor={accentColor}
-              screenLabel={screenLabel}
-              suggestions={suggestions}
-              onSuggestion={handleSuggestion}
+              onNew={() => { newThread!(); setSidebarOpen(false); }}
+              onSwitch={id => { switchThread!(id); setSidebarOpen(false); }}
+              onDelete={deleteThread}
             />
-          ) : (
-            <div className="px-4 py-5 space-y-4">
-              {messages.map((msg, idx) => (
-                <MessageBubble
-                  key={msg.id}
-                  message={msg}
-                  accentColor={accentColor}
-                  feedbackGiven={feedback[msg.id]}
-                  onFeedback={handleFeedback}
-                  isLast={idx === messages.length - 1}
-                />
-              ))}
-              {/* Loading dots when no optimistic message yet */}
-              {isLoading && !messages.some(m => m.loading) && (
-                <TypingIndicator />
-              )}
-            </div>
           )}
+
+          {/* Message list */}
+          <div
+            ref={scrollRef}
+            className="flex-1 overflow-y-auto overscroll-contain scroll-smooth"
+            style={{ background: '#f8f9fc' }}
+          >
+            {messages.length === 0 ? (
+              <EmptyState
+                title={title}
+                logoUrl={logoUrl}
+                accentColor={accentColor}
+                screenLabel={screenLabel}
+                suggestions={suggestions}
+                onSuggestion={handleSuggestion}
+              />
+            ) : (
+              <div className="px-4 py-5 space-y-4">
+                {messages.map((msg, idx) => (
+                  <MessageBubble
+                    key={msg.id}
+                    message={msg}
+                    accentColor={accentColor}
+                    feedbackGiven={feedback[msg.id]}
+                    onFeedback={handleFeedback}
+                    isLast={idx === messages.length - 1}
+                  />
+                ))}
+                {isLoading && !messages.some(m => m.loading) && (
+                  <TypingIndicator />
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* ── Input area ───────────────────────────────────────────────────── */}
@@ -322,35 +353,41 @@ export function AgentPanel({
 
 function PanelHeader({
   title, subtitle, logoUrl, accentColor, screenLabel, isFloating,
-  messageCount, onClear, onClose,
+  messageCount, hasThreads, sidebarOpen, onToggleSidebar, onClear, onClose,
 }: {
   title: string; subtitle?: string; logoUrl?: string; accentColor: string;
   screenLabel?: string; isFloating: boolean; messageCount: number;
-  onClear: () => void; onClose: () => void;
+  hasThreads: boolean; sidebarOpen: boolean;
+  onToggleSidebar: () => void; onClear: () => void; onClose: () => void;
 }) {
   return (
     <header
       className={`shrink-0 flex items-center justify-between px-4 py-3 border-b border-black/[0.06] ${isFloating ? 'rounded-t-2xl' : ''}`}
       style={{ background: `linear-gradient(135deg, ${accentColor}f2 0%, ${accentColor}d0 100%)` }}
     >
-      {/* Left: logo + title */}
-      <div className="flex items-center gap-3 min-w-0">
+      {/* Left: threads toggle + logo + title */}
+      <div className="flex items-center gap-2 min-w-0">
+        {hasThreads && (
+          <button
+            onClick={onToggleSidebar}
+            title={sidebarOpen ? 'Hide threads' : 'Show threads'}
+            className={`p-1.5 rounded-lg transition-colors shrink-0 ${sidebarOpen ? 'bg-white/25 text-white' : 'text-white/70 hover:text-white hover:bg-white/20'}`}
+          >
+            <MessageSquare size={15} strokeWidth={1.75} />
+          </button>
+        )}
+
         {logoUrl ? (
-          <img
-            src={logoUrl}
-            alt={title}
-            className="w-9 h-9 rounded-xl object-contain bg-white/20 p-1 shrink-0"
-          />
+          <img src={logoUrl} alt={title} className="w-8 h-8 rounded-xl object-contain bg-white/20 p-1 shrink-0" />
         ) : (
-          <div className="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center shrink-0 backdrop-blur-sm">
-            <Bot size={18} className="text-white" strokeWidth={2} />
+          <div className="w-8 h-8 rounded-xl bg-white/20 flex items-center justify-center shrink-0 backdrop-blur-sm">
+            <Bot size={16} className="text-white" strokeWidth={2} />
           </div>
         )}
 
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <h3 className="font-semibold text-white text-sm leading-tight truncate">{title}</h3>
-            {/* Online dot */}
             <span className="relative flex h-2 w-2 shrink-0">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-300 opacity-75" />
               <span className="relative inline-flex h-2 w-2 rounded-full bg-green-400" />
@@ -384,6 +421,108 @@ function PanelHeader({
         </button>
       </div>
     </header>
+  );
+}
+
+// ── ThreadSidebar ─────────────────────────────────────────────────────────────
+
+function ThreadSidebar({
+  threads, currentThreadId, accentColor, onNew, onSwitch, onDelete,
+}: {
+  threads: Thread[];
+  currentThreadId: string;
+  accentColor: string;
+  onNew: () => void;
+  onSwitch: (id: string) => void;
+  onDelete?: (id: string) => void;
+}) {
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
+
+  function relativeTime(iso: string) {
+    const diff = Date.now() - new Date(iso).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1)  return 'just now';
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24)  return `${hrs}h ago`;
+    return `${Math.floor(hrs / 24)}d ago`;
+  }
+
+  return (
+    <div
+      className="w-[180px] shrink-0 flex flex-col border-r border-slate-100 bg-white overflow-hidden"
+      style={{ background: '#fafafa' }}
+    >
+      {/* New thread button */}
+      <button
+        onClick={onNew}
+        className="flex items-center gap-2 px-3 py-3 text-xs font-semibold border-b border-slate-100
+                   hover:bg-slate-50 transition-colors w-full text-left"
+        style={{ color: accentColor }}
+      >
+        <Plus size={13} strokeWidth={2.5} />
+        New thread
+      </button>
+
+      {/* Thread list */}
+      <div className="flex-1 overflow-y-auto">
+        {threads.map(thread => {
+          const isActive = thread.id === currentThreadId;
+          const isHovered = hoveredId === thread.id;
+
+          return (
+            <div
+              key={thread.id}
+              className="relative group"
+              onMouseEnter={() => setHoveredId(thread.id)}
+              onMouseLeave={() => setHoveredId(null)}
+            >
+              <button
+                onClick={() => onSwitch(thread.id)}
+                className={`w-full text-left px-3 py-2.5 transition-colors ${
+                  isActive
+                    ? 'bg-slate-100'
+                    : 'hover:bg-slate-50'
+                }`}
+              >
+                {/* Active indicator bar */}
+                {isActive && (
+                  <span
+                    className="absolute left-0 top-1 bottom-1 w-0.5 rounded-r"
+                    style={{ background: accentColor }}
+                  />
+                )}
+                <p
+                  className={`text-xs leading-snug line-clamp-2 pr-4 ${
+                    isActive ? 'font-medium text-slate-800' : 'text-slate-600'
+                  }`}
+                >
+                  {thread.title}
+                </p>
+                <div className="flex items-center gap-1 mt-1">
+                  <Clock size={9} className="text-slate-300 shrink-0" />
+                  <span className="text-[10px] text-slate-400">
+                    {relativeTime(thread.updatedAt)}
+                  </span>
+                </div>
+              </button>
+
+              {/* Delete button — appears on hover */}
+              {onDelete && isHovered && (
+                <button
+                  onClick={e => { e.stopPropagation(); onDelete(thread.id); }}
+                  title="Delete thread"
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 p-1 rounded
+                             text-slate-300 hover:text-red-400 hover:bg-red-50 transition-colors"
+                >
+                  <Trash2 size={11} strokeWidth={1.75} />
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 

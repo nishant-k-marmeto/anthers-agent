@@ -28,6 +28,17 @@ export interface AgentMessage {
   error?:    string;
 }
 
+// ── Thread / persistence types ────────────────────────────────────────────────
+
+export interface Thread {
+  id:         string;
+  title:      string;       // auto-generated from first user message (≤ 40 chars)
+  screenType: string;
+  messages:   AgentMessage[];
+  createdAt:  string;       // ISO string — Date is not JSON-serialisable
+  updatedAt:  string;
+}
+
 // ── Client config ─────────────────────────────────────────────────────────────
 
 export interface AgentClientConfig {
