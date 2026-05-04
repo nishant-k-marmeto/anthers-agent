@@ -23,7 +23,7 @@
  *   console.log(result.narrative);
  */
 
-import type { AgentClientConfig, AgentResponse } from './types';
+import type { AgentClientConfig, AgentResponse, Thread } from './types';
 
 export interface AnalyseOptions {
   /** The user's question */
@@ -116,5 +116,80 @@ export class AgentClient {
     if (!res.ok)            throw new Error(`Analyse failed: ${res.status}`);
 
     return res.json() as Promise<AgentResponse>;
+  }
+
+  // ── Conversation persistence API ──────────────────────────────────────────
+
+  /** Upsert a thread by its client-side external_id. Safe to call multiple times. */
+  async upsertThread(thread: Pick<Thread, 'id' | 'title' | 'screenType'>): Promise<{ id: string }> {
+    if (!this.token) await this.login();
+    const res = await fetch(`${this.cfg.agentUrl}/threads`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.token}` },
+      body: JSON.stringify({
+        external_id: thread.id,
+        title:       thread.title,
+        screen_type: thread.screenType,
+      }),
+    });
+    if (!res.ok) throw new Error(`upsertThread failed: ${res.status}`);
+    return res.json();
+  }
+
+  /** Push a batch of messages to a thread (identified by its DB id returned from upsertThread). */
+  async syncMessages(dbThreadId: string, messages: Array<{
+    external_id: string;
+    role:        'user' | 'agent';
+    content:     string;
+    metadata?:   Record<string, unknown>;
+    created_at?: string;
+  }>): Promise<void> {
+    if (!this.token) await this.login();
+    const res = await fetch(`${this.cfg.agentUrl}/threads/${dbThreadId}/messages/bulk`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.token}` },
+      body: JSON.stringify({ messages }),
+    });
+    if (!res.ok) throw new Error(`syncMessages failed: ${res.status}`);
+  }
+
+  /** List all threads from DB for this client. */
+  async listThreads(): Promise<Array<Thread & { message_count: number }>> {
+    if (!this.token) await this.login();
+    const res = await fetch(`${this.cfg.agentUrl}/threads`, {
+      headers: { 'Authorization': `Bearer ${this.token}` },
+    });
+    if (!res.ok) throw new Error(`listThreads failed: ${res.status}`);
+    const rows = await res.json() as any[];
+    // Normalise snake_case from DB → camelCase for SDK
+    return rows.map(r => ({
+      id:           r.external_id ?? r.id,   // SDK always works with external_id
+      _dbId:        r.id,                    // keep DB id for message sync
+      title:        r.title,
+      screenType:   r.screen_type ?? 'general',
+      messages:     [],                       // messages loaded lazily
+      createdAt:    r.created_at,
+      updatedAt:    r.updated_at,
+      message_count: r.message_count ?? 0,
+    }));
+  }
+
+  /** Update a thread's title in DB. */
+  async renameThread(dbThreadId: string, title: string): Promise<void> {
+    if (!this.token) await this.login();
+    await fetch(`${this.cfg.agentUrl}/threads/${dbThreadId}/title`, {
+      method:  'PATCH',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.token}` },
+      body: JSON.stringify({ title }),
+    });
+  }
+
+  /** Delete a thread and all its messages from DB. */
+  async deleteThreadFromDb(dbThreadId: string): Promise<void> {
+    if (!this.token) await this.login();
+    await fetch(`${this.cfg.agentUrl}/threads/${dbThreadId}`, {
+      method:  'DELETE',
+      headers: { 'Authorization': `Bearer ${this.token}` },
+    });
   }
 }

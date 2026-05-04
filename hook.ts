@@ -31,6 +31,11 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { AgentClient }    from './client';
 import type { AgentMessage, AgentResponse, Thread } from './types';
 
+// ── DB id cache ───────────────────────────────────────────────────────────────
+// Maps SDK external_id (localStorage UUID) → DB thread id (Postgres UUID).
+// Kept in module scope so it persists across re-renders without triggering them.
+const dbIdCache = new Map<string, string>();
+
 // ── Storage helpers ───────────────────────────────────────────────────────────
 
 function loadThreads(key: string): Thread[] {
@@ -80,6 +85,12 @@ export interface UseAgentOptions {
   storageKey?:     string;
   /** Max threads to keep — oldest pruned when exceeded. Default: 20 */
   maxThreads?:     number;
+  /**
+   * Sync conversations to the agent MS database.
+   * true  = hybrid (localStorage + DB). UI always reads localStorage; DB is async backup.
+   * false = localStorage only (default).
+   */
+  persistToDb?:    boolean;
   /** Called on every sendMessage — returns live page context. */
   getPageContext?: () => Record<string, unknown>;
   /** Returns your product user's auth token forwarded to backend APIs. */
@@ -107,8 +118,56 @@ export interface UseAgentResult {
 // ── Factory ───────────────────────────────────────────────────────────────────
 
 export function createUseAgent(client: AgentClient, opts: UseAgentOptions = {}) {
-  const STORAGE_KEY = opts.storageKey ?? 'agent_threads';
-  const MAX_THREADS = opts.maxThreads ?? 20;
+  const STORAGE_KEY  = opts.storageKey ?? 'agent_threads';
+  const MAX_THREADS  = opts.maxThreads ?? 20;
+  const PERSIST_DB   = opts.persistToDb ?? false;
+
+  // ── DB sync helpers (fire-and-forget, never block UI) ────────────────────────
+
+  async function syncThreadToDb(thread: Thread): Promise<string | null> {
+    if (!PERSIST_DB) return null;
+    try {
+      const row = await client.upsertThread(thread);
+      const dbId = (row as any).id as string;
+      dbIdCache.set(thread.id, dbId);
+      return dbId;
+    } catch (e) {
+      console.warn('[useAgent] DB thread sync failed (non-fatal):', e);
+      return null;
+    }
+  }
+
+  async function syncMessagesToDb(
+    threadId: string,
+    messages: AgentMessage[],
+  ): Promise<void> {
+    if (!PERSIST_DB) return;
+    try {
+      let dbId = dbIdCache.get(threadId);
+      if (!dbId) {
+        // thread not yet in cache — upsert it first
+        const stored = loadThreads(STORAGE_KEY);
+        const thread = stored.find(t => t.id === threadId);
+        if (!thread) return;
+        dbId = (await syncThreadToDb(thread)) ?? undefined;
+        if (!dbId) return;
+      }
+      const payload = messages
+        .filter(m => !m.loading && !m.error)
+        .map(m => ({
+          external_id: m.id,
+          role:        m.role as 'user' | 'agent',
+          content:     m.content,
+          metadata:    m.response
+            ? { confidence: m.response.confidence, insights: m.response.insights, apisCalled: m.response.apisCalled }
+            : undefined,
+          created_at:  new Date(m.timestamp).toISOString(),
+        }));
+      if (payload.length > 0) await client.syncMessages(dbId, payload);
+    } catch (e) {
+      console.warn('[useAgent] DB message sync failed (non-fatal):', e);
+    }
+  }
 
   return function useAgent(): UseAgentResult {
     const getScreenType = () =>
@@ -190,15 +249,24 @@ export function createUseAgent(client: AgentClient, opts: UseAgentOptions = {}) 
           signal: abortRef.current.signal,
         });
 
+        const agentMsg: AgentMessage = {
+          id:        loadingId,
+          role:      'agent',
+          content:   data.narrative,
+          response:  data,
+          timestamp: new Date(),
+          loading:   false,
+        };
+
         updateThread(threadId, t => ({
           ...t,
-          messages: t.messages.map(m =>
-            m.id === loadingId
-              ? { ...m, content: data.narrative, response: data, loading: false }
-              : m,
-          ),
+          messages: t.messages.map(m => m.id === loadingId ? agentMsg : m),
           updatedAt: new Date().toISOString(),
         }));
+
+        // ── Fire-and-forget DB sync (never blocks UI) ─────────────────────────
+        syncMessagesToDb(threadId, [userMsg, agentMsg]);
+
       } catch (err: any) {
         if (err.name === 'AbortError') return;
         updateThread(threadId, t => ({
@@ -244,6 +312,8 @@ export function createUseAgent(client: AgentClient, opts: UseAgentOptions = {}) 
         return updated.length > MAX_THREADS ? updated.slice(0, MAX_THREADS) : updated;
       });
       setCurrentThreadId(thread.id);
+      // Register thread in DB immediately so message syncs have a target
+      syncThreadToDb(thread);
     }, []);
 
     // ── switchThread ──────────────────────────────────────────────────────────
@@ -255,6 +325,14 @@ export function createUseAgent(client: AgentClient, opts: UseAgentOptions = {}) 
 
     // ── deleteThread ──────────────────────────────────────────────────────────
     const deleteThread = useCallback((id: string) => {
+      // Also delete from DB (fire-and-forget)
+      const dbId = dbIdCache.get(id);
+      if (PERSIST_DB && dbId) {
+        client.deleteThreadFromDb(dbId).catch(e =>
+          console.warn('[useAgent] DB delete failed (non-fatal):', e),
+        );
+        dbIdCache.delete(id);
+      }
       setThreads(prev => {
         const remaining = prev.filter(t => t.id !== id);
         if (id === currentThreadId) {
