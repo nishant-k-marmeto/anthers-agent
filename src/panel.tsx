@@ -838,6 +838,50 @@ function MessageBubble({ message, accentColor, feedbackGiven, onFeedback, isLast
           );
         })}
 
+        {/* File download cards — rendered when agent called a file-export tool */}
+        {res?.files?.map((file, i) => (
+          <div
+            key={i}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              gap: 10, borderRadius: 10, padding: '10px 14px',
+              border: '1px solid #e0e7ff', background: '#f5f7ff',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+              <span style={{ fontSize: 18, flexShrink: 0 }}>📄</span>
+              <div style={{ minWidth: 0 }}>
+                <p style={{ fontSize: 12.5, fontWeight: 600, color: '#3730a3', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {file.filename}
+                </p>
+                {file.rowCount !== undefined && (
+                  <p style={{ fontSize: 11, color: '#6366f1', margin: '1px 0 0', opacity: 0.75 }}>
+                    {file.rowCount.toLocaleString()} rows
+                  </p>
+                )}
+              </div>
+            </div>
+            <button
+              onClick={() => {
+                const blob = new Blob([file.content], { type: file.mimeType });
+                const url  = URL.createObjectURL(blob);
+                const a    = document.createElement('a');
+                a.href     = url;
+                a.download = file.filename;
+                a.click();
+                URL.revokeObjectURL(url);
+              }}
+              style={{
+                flexShrink: 0, padding: '5px 12px', borderRadius: 7, fontSize: 12,
+                fontWeight: 600, cursor: 'pointer', border: '1px solid #a5b4fc',
+                background: '#fff', color: '#4f46e5',
+              }}
+            >
+              ⬇ Download
+            </button>
+          </div>
+        ))}
+
         {/* Footer */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 2px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>

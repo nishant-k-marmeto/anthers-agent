@@ -11,11 +11,20 @@ export interface AgentInsight {
   metric?: string;
 }
 
+export interface AgentFile {
+  type:     'file';
+  filename: string;
+  mimeType: string;
+  content:  string;   // raw file content (CSV string, etc.)
+  rowCount?: number;
+}
+
 export interface AgentResponse {
   narrative:  string;
   insights:   AgentInsight[];
   apisCalled: string[];
   confidence: 'high' | 'medium' | 'low';
+  files?:     AgentFile[];   // populated when agent called a file-export tool
 }
 
 export interface AgentMessage {
