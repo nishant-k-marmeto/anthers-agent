@@ -4,6 +4,7 @@ export type {
   AgentResponse,
   AgentMessage,
   AgentInsight,
+  AgentFile,
   Thread,
   ApiDefinition,
   ApiParameter,
