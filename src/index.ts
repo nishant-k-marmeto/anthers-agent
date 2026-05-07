@@ -6,6 +6,7 @@ export type {
   AgentInsight,
   AgentFile,
   Thread,
+  ConversationTurn,
   ApiDefinition,
   ApiParameter,
 } from './types';

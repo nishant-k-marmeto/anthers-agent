@@ -48,6 +48,13 @@ export interface Thread {
   updatedAt:  string;
 }
 
+// ── Conversation history ──────────────────────────────────────────────────────
+
+export interface ConversationTurn {
+  role:    'user' | 'agent';
+  content: string;
+}
+
 // ── Client config ─────────────────────────────────────────────────────────────
 
 export interface AgentClientConfig {

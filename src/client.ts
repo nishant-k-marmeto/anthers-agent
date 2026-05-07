@@ -23,7 +23,7 @@
  *   console.log(result.narrative);
  */
 
-import type { AgentClientConfig, AgentResponse, Thread } from './types';
+import type { AgentClientConfig, AgentResponse, Thread, ConversationTurn } from './types';
 
 export interface AnalyseOptions {
   /** The user's question */
@@ -38,6 +38,11 @@ export interface AnalyseOptions {
    * Forwarded to MCP tools and DB tools so they can fetch per-user data.
    */
   authToken?:  string;
+  /**
+   * Prior conversation turns for context chaining.
+   * Built and capped (max 10 pairs) by the hook before calling analyse().
+   */
+  conversationHistory?: ConversationTurn[];
   /** Cancel an in-flight request */
   signal?:     AbortSignal;
 }
@@ -98,10 +103,11 @@ export class AgentClient {
       },
       signal: opts.signal,
       body: JSON.stringify({
-        userMessage: opts.userMessage,
-        pageContext: opts.pageContext ?? { screen: { type: 'business' }, filters: {} },
-        authToken:   opts.authToken  ?? '',
-        apiRegistry: [],
+        userMessage:         opts.userMessage,
+        pageContext:         opts.pageContext ?? { screen: { type: 'business' }, filters: {} },
+        authToken:           opts.authToken  ?? '',
+        apiRegistry:         [],
+        conversationHistory: opts.conversationHistory ?? [],
       }),
     });
 

@@ -29,7 +29,25 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { AgentClient }    from './client';
-import type { AgentMessage, AgentResponse, Thread } from './types';
+import type { AgentMessage, AgentResponse, Thread, ConversationTurn } from './types';
+
+// ── Conversation history constants ────────────────────────────────────────────
+const MAX_HISTORY_PAIRS = 10; // last 10 user+agent pairs = 20 messages max
+
+/**
+ * Builds a sliding-window conversation history from the current thread messages.
+ * - Excludes loading/error messages
+ * - Caps at MAX_HISTORY_PAIRS complete pairs
+ * - Only keeps content (narrative) — strips full response metadata to save tokens
+ */
+function buildConversationHistory(messages: AgentMessage[]): ConversationTurn[] {
+  const completed = messages.filter(m => !m.loading && !m.error);
+  const capped = completed.slice(-(MAX_HISTORY_PAIRS * 2));
+  return capped.map(m => ({
+    role:    m.role === 'user' ? 'user' : 'agent',
+    content: m.content,
+  }));
+}
 
 // ── DB id cache ───────────────────────────────────────────────────────────────
 // Maps SDK external_id (localStorage UUID) → DB thread id (Postgres UUID).
@@ -212,6 +230,12 @@ export function createUseAgent(client: AgentClient, opts: UseAgentOptions = {}) 
       const authToken  = opts.getAuthToken?.() ?? '';
       const threadId   = currentThreadId;
 
+      // Build history from the current state BEFORE we push the new message in.
+      // This gives Gemini the prior turns as context, not the current question twice.
+      const conversationHistory = buildConversationHistory(
+        threads.find(t => t.id === threadId)?.messages ?? [],
+      );
+
       const userMsg: AgentMessage = {
         id:        crypto.randomUUID(),
         role:      'user',
@@ -246,6 +270,7 @@ export function createUseAgent(client: AgentClient, opts: UseAgentOptions = {}) 
           userMessage,
           pageContext,
           authToken,
+          conversationHistory,
           signal: abortRef.current.signal,
         });
 
