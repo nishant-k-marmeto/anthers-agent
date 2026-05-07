@@ -206,7 +206,13 @@ export function createUseAgent(client: AgentClient, opts: UseAgentOptions = {}) 
     );
 
     const [isLoading, setIsLoading] = useState(false);
-    const abortRef = useRef<AbortController | null>(null);
+    const abortRef   = useRef<AbortController | null>(null);
+
+    // ── Always-current ref to threads — avoids stale closure in sendMessage ──
+    // useCallback deps don't include threads (would recreate on every state change),
+    // so we mirror threads into a ref that's always up-to-date.
+    const threadsRef = useRef(threads);
+    useEffect(() => { threadsRef.current = threads; }, [threads]);
 
     // ── Persist to localStorage whenever threads change ───────────────────────
     useEffect(() => {
@@ -230,10 +236,11 @@ export function createUseAgent(client: AgentClient, opts: UseAgentOptions = {}) 
       const authToken  = opts.getAuthToken?.() ?? '';
       const threadId   = currentThreadId;
 
-      // Build history from the current state BEFORE we push the new message in.
-      // This gives Gemini the prior turns as context, not the current question twice.
+      // Build history from the ref (always current) BEFORE the new message is pushed.
+      // Reading from threadsRef.current avoids the stale closure problem — threads
+      // is not in useCallback's dep array so reading it directly gives old state.
       const conversationHistory = buildConversationHistory(
-        threads.find(t => t.id === threadId)?.messages ?? [],
+        threadsRef.current.find(t => t.id === threadId)?.messages ?? [],
       );
 
       const userMsg: AgentMessage = {
