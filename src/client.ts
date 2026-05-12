@@ -43,6 +43,11 @@ export interface AnalyseOptions {
    * Built and capped (max 10 pairs) by the hook before calling analyse().
    */
   conversationHistory?: ConversationTurn[];
+  /**
+   * SDK thread ID — forwarded to the backend as sessionId so Langfuse groups
+   * all turns of the same thread together in the Sessions dashboard.
+   */
+  sessionId?: string;
   /** Cancel an in-flight request */
   signal?:     AbortSignal;
 }
@@ -108,6 +113,7 @@ export class AgentClient {
         authToken:           opts.authToken  ?? '',
         apiRegistry:         [],
         conversationHistory: opts.conversationHistory ?? [],
+        sessionId:           opts.sessionId,   // thread ID → Langfuse session grouping
       }),
     });
 

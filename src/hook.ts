@@ -278,6 +278,7 @@ export function createUseAgent(client: AgentClient, opts: UseAgentOptions = {}) 
           pageContext,
           authToken,
           conversationHistory,
+          sessionId: threadId,   // thread UUID → Langfuse session grouping
           signal: abortRef.current.signal,
         });
 
