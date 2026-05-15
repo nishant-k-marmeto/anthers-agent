@@ -2,6 +2,25 @@
 // All SDK types in one place.  Import from the package root, not this file.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── Chart types ───────────────────────────────────────────────────────────────
+// Produced by the backend's global generate_chart_spec tool.
+// Rendered in AgentPanel via Chart.js (lazy-loaded — zero cost until first chart appears).
+
+export interface ChartDataset {
+  label: string;
+  data:  number[];
+}
+
+export interface ChartSpec {
+  type:     'bar' | 'line' | 'pie' | 'doughnut';
+  title:    string;
+  labels:   string[];
+  datasets: ChartDataset[];
+  currency?: string;   // ISO code e.g. 'USD', 'INR' — formats y-axis values
+  unit?:     string;   // suffix e.g. '%', 'kg' — appended to y-axis values
+  stacked?:  boolean;  // stack datasets on bar/line charts
+}
+
 // ── Core response types ───────────────────────────────────────────────────────
 
 export interface AgentInsight {
@@ -24,7 +43,8 @@ export interface AgentResponse {
   insights:   AgentInsight[];
   apisCalled: string[];
   confidence: 'high' | 'medium' | 'low';
-  files?:     AgentFile[];   // populated when agent called a file-export tool
+  files?:     AgentFile[];    // populated when agent called a file-export tool
+  charts?:    ChartSpec[];   // populated when agent called generate_chart_spec
 }
 
 export interface AgentMessage {

@@ -5,6 +5,8 @@ export type {
   AgentMessage,
   AgentInsight,
   AgentFile,
+  ChartSpec,
+  ChartDataset,
   Thread,
   ConversationTurn,
   ApiDefinition,

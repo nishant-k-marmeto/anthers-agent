@@ -33,8 +33,11 @@
  */
 
 import React, {
-  useState, useRef, useEffect, useCallback, useMemo,
+  useState, useRef, useEffect, useCallback, useMemo, lazy, Suspense,
 } from 'react';
+
+// ── Lazy-load ChartCard so Chart.js is only downloaded when a chart appears ───
+const ChartCard = lazy(() => import('./chart-card'));
 import {
   X, Send, Loader2, Maximize2, Minimize2,
   ThumbsUp, ThumbsDown, TrendingUp, AlertTriangle, Info,
@@ -838,6 +841,15 @@ function MessageBubble({ message, accentColor, feedbackGiven, onFeedback, isLast
           );
         })}
 
+        {/* Chart cards — rendered when agent called generate_chart_spec global tool */}
+        {res?.charts && res.charts.length > 0 && (
+          <Suspense fallback={<ChartSkeleton />}>
+            {res.charts.map((spec, i) => (
+              <ChartCard key={i} spec={spec} />
+            ))}
+          </Suspense>
+        )}
+
         {/* File download cards — rendered when agent called a file-export tool */}
         {res?.files?.map((file, i) => (
           <div
@@ -927,6 +939,34 @@ function MessageBubble({ message, accentColor, feedbackGiven, onFeedback, isLast
 
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── ChartSkeleton — shown while Chart.js chunk is loading ─────────────────────
+
+function ChartSkeleton() {
+  return (
+    <div style={{
+      background:    '#f8fafc',
+      borderRadius:  12,
+      border:        '1px solid #e8eaf0',
+      padding:       '14px 16px',
+      height:        260,
+      display:       'flex',
+      flexDirection: 'column',
+      gap:           8,
+    }}>
+      {/* Title placeholder */}
+      <div style={{ width: '55%', height: 12, borderRadius: 6, background: '#e2e8f0' }} />
+      {/* Chart area placeholder */}
+      <div style={{
+        flex:          1,
+        borderRadius:  8,
+        background:    'linear-gradient(90deg, #f1f5f9 25%, #e8edf4 50%, #f1f5f9 75%)',
+        backgroundSize: '200% 100%',
+        animation:     'chartShimmer 1.4s ease-in-out infinite',
+      }} />
     </div>
   );
 }
@@ -1040,6 +1080,10 @@ if (typeof document !== 'undefined' && !document.getElementById('agent-panel-sty
     @keyframes ping {
       0%, 100% { transform: scale(1); opacity: 0.7; }
       50% { transform: scale(1.6); opacity: 0; }
+    }
+    @keyframes chartShimmer {
+      0%   { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
     }
   `;
   document.head.appendChild(style);
